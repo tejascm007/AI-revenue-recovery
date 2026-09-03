@@ -22,6 +22,7 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from fastmcp import FastMCP  # noqa: E402
 
+from rzp_agent_kit.audit import write_audit_log  # noqa: E402
 from rzp_common.mongo_client import get_db  # noqa: E402
 
 mcp = FastMCP("Prob4EmiSalvage")
@@ -32,6 +33,7 @@ HARD_REJECT_BLOCK_VALUE = 999  # permanently exceeds the {$lt: 1} cap filter
 
 def _suggest_alternate_impl(order_id: str, declined_provider: str, error_reason: str) -> dict:
     db = get_db()
+    observation = {"declined_provider": declined_provider, "error_reason": error_reason}
 
     if error_reason in HARD_REJECT_REASONS:
         db.checkout_sessions.update_one(
@@ -39,30 +41,54 @@ def _suggest_alternate_impl(order_id: str, declined_provider: str, error_reason:
             {"$set": {"emi_suggestion_count": HARD_REJECT_BLOCK_VALUE},
              "$addToSet": {"emi_declined_providers": declined_provider}},
         )
-        return {
+        result = {
             "suggestion": None,
             "fallback_methods": ["upi", "netbanking"],
             "reason": "hard_reject_blocked",
         }
+        write_audit_log(
+            problem_id=4, tool_name="suggest_alternate_emi", entity_refs={"order_id": order_id},
+            observation=observation, decision={"action": "STOP_IF_HARD_REJECT"},
+            execution={"status": "blocked_permanently"}, mcp_server="prob4_emi_salvage",
+        )
+        return result
 
-    result = db.checkout_sessions.find_one_and_update(
+    find_result = db.checkout_sessions.find_one_and_update(
         {"_id": order_id, "emi_suggestion_count": {"$lt": 1}},
         {"$inc": {"emi_suggestion_count": 1},
          "$addToSet": {"emi_declined_providers": declined_provider}},
         return_document=True,
     )
-    if result is None:
-        return {"suggestion": None, "reason": "cap_reached"}
+    if find_result is None:
+        result = {"suggestion": None, "reason": "cap_reached"}
+        write_audit_log(
+            problem_id=4, tool_name="suggest_alternate_emi", entity_refs={"order_id": order_id},
+            observation=observation, decision={"action": "NO_SUGGESTION", "reason": "cap_reached"},
+            execution={"status": "no_action"}, mcp_server="prob4_emi_salvage",
+        )
+        return result
 
     priority = db.merchant_config.find_one(
         {"_id": "merchant_config"}, {"emi_provider_priority": 1}
     ).get("emi_provider_priority", [])
-    declined = set(result.get("emi_declined_providers", []))
+    declined = set(find_result.get("emi_declined_providers", []))
     for provider in priority:
         if provider not in declined:
-            return {"suggestion": {"provider": provider}, "reason": "suggested_alternate"}
+            result = {"suggestion": {"provider": provider}, "reason": "suggested_alternate"}
+            write_audit_log(
+                problem_id=4, tool_name="suggest_alternate_emi", entity_refs={"order_id": order_id},
+                observation=observation, decision={"action": "SUGGEST_ALTERNATE", "provider": provider},
+                execution={"status": "suggested"}, mcp_server="prob4_emi_salvage",
+            )
+            return result
 
-    return {"suggestion": None, "reason": "no_alternate_provider_available"}
+    result = {"suggestion": None, "reason": "no_alternate_provider_available"}
+    write_audit_log(
+        problem_id=4, tool_name="suggest_alternate_emi", entity_refs={"order_id": order_id},
+        observation=observation, decision={"action": "NO_SUGGESTION", "reason": "no_alternate_provider_available"},
+        execution={"status": "no_action"}, mcp_server="prob4_emi_salvage",
+    )
+    return result
 
 
 @mcp.tool()

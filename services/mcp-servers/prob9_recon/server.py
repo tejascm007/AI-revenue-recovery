@@ -22,6 +22,8 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from fastmcp import FastMCP  # noqa: E402
 
+from rzp_agent_kit.audit import write_audit_log  # noqa: E402
+from rzp_agent_kit.wa_templates import build_delegation_artifact  # noqa: E402
 from rzp_common.email_client import send_email  # noqa: E402
 from rzp_common.mongo_client import get_db  # noqa: E402
 from rzp_common.redis_client import get_redis  # noqa: E402
@@ -43,12 +45,15 @@ ESCALATION_MIN_DAY_OFFSET = {"ESCALATE_TO_PROCUREMENT": 14, "ESCALATE_TO_FINANCE
 
 
 def _write_audit_log(invoice_id: str, observation: dict, decision: dict, execution: dict) -> None:
-    db = get_db()
-    db.audit_logs.insert_one({
-        "timestamp": datetime.now(timezone.utc), "problem_id": 9,
-        "entity_refs": {"invoice_id": invoice_id},
-        "observation": observation, "decision": decision, "execution": execution,
-    })
+    # Reconciliation fix (2026-09-03): this used to be a private writer using
+    # only a subset of audit_logs' schema. Now a thin wrapper over the shared
+    # libs/rzp_agent_kit/audit.py writer every other problem's tools use too,
+    # kept here only so call sites below don't all need a tool_name threaded
+    # through them individually.
+    write_audit_log(
+        problem_id=9, tool_name="execute_action", entity_refs={"invoice_id": invoice_id},
+        observation=observation, decision=decision, execution=execution, mcp_server="prob9_recon",
+    )
 
 
 @mcp.tool()
@@ -205,19 +210,31 @@ def execute_action(invoice_id: str, action: str, reasoning: str) -> dict:
     if action == "WAIT" or action == "SCHEDULE_FOLLOWUP" or action == "REQUEST_INVOICE_CONFIRMATION":
         execution = {"status": "logged_no_action"}
     elif action in ("SEND_REMINDER", "SEND_PAYMENT_LINK"):
-        link = None
+        # Gap fix (2026-09-03): this used to name templates ("b2b_reminder",
+        # "b2b_payment_link") that were never added to prob8's catalog, and
+        # never supplied customer_id/phone at all — a real two-hop send would
+        # have failed validation with no earlier warning. Now built via the
+        # shared build_delegation_artifact(), against real customer contact
+        # details looked up from the invoice's linked customer record, the
+        # same pattern as Problems 3/5/6.
+        customer = db.customers.find_one({"razorpay_customer_id": invoice.get("customer_id")}) or {}
         if action == "SEND_PAYMENT_LINK":
             link = create_payment_link(
                 amount=invoice["amount"], currency="INR", reference_id=invoice_id,
                 description=f"Payment for invoice {invoice_id}",
                 expire_by=int(datetime.now(timezone.utc).timestamp()) + 30 * 86400,
             )
-        execution = {
-            "status": "pending_two_hop_delegation",
-            "artifact": {"action": "send_whatsapp",
-                         "template": "b2b_reminder" if action == "SEND_REMINDER" else "b2b_payment_link",
-                         "link": link.get("short_url") if link else None},
-        }
+            execution = build_delegation_artifact(
+                invoice.get("customer_id"), customer.get("phone", ""), "b2b_payment_link",
+                {"name": customer.get("name") or "Customer", "invoice_id": invoice_id,
+                 "amount": invoice["amount"], "link": link["short_url"]},
+            )
+        else:
+            execution = build_delegation_artifact(
+                invoice.get("customer_id"), customer.get("phone", ""), "b2b_reminder",
+                {"name": customer.get("name") or "Customer", "invoice_id": invoice_id,
+                 "amount": invoice["amount"]},
+            )
     elif action in ("ESCALATE_TO_PROCUREMENT", "ESCALATE_TO_FINANCE"):
         config = db.merchant_config.find_one({"_id": "merchant_config"}) or {}
         contact_key = "procurement" if action == "ESCALATE_TO_PROCUREMENT" else "finance"

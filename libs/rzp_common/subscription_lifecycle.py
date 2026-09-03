@@ -29,10 +29,14 @@ def schedule_hard_decline_link(subscription_id: str) -> None:
     )
 
 
-def schedule_dunning_sequence(subscription_id: str, dunning_link_id: str) -> None:
+def schedule_dunning_sequence(subscription_id: str, dunning_link_id: str,
+                               dunning_link_short_url: str) -> None:
     """Problem 6: schedule all four checkpoints upfront (touch1 fires immediately,
     per the design's finding that halted is already the culmination of several
-    days, so an instant first touch doesn't read as robotic)."""
+    days, so an instant first touch doesn't read as robotic). Stores the link's
+    short_url alongside its entity ID (gap fix, 2026-09-03) so evaluate_next_touch
+    can build each touch's WhatsApp delegation artifact without a second Razorpay
+    lookup — the ID alone was never enough to construct the message."""
     r = get_redis()
     now = time.time()
     mapping = {
@@ -48,6 +52,7 @@ def schedule_dunning_sequence(subscription_id: str, dunning_link_id: str) -> Non
         {"$set": {
             "dunning_sequence_stage": 0,
             "dunning_link_id": dunning_link_id,
+            "dunning_link_short_url": dunning_link_short_url,
             "dunning_started_at": datetime.now(timezone.utc),
         }},
     )

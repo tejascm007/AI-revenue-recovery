@@ -23,6 +23,7 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from fastmcp import FastMCP  # noqa: E402
 
+from rzp_agent_kit.audit import write_audit_log  # noqa: E402
 from rzp_common.mongo_client import get_db  # noqa: E402
 from rzp_common.redis_client import get_redis  # noqa: E402
 from temporal_resolver import resolve  # noqa: E402
@@ -61,6 +62,8 @@ def set_ptp_lock(subscription_id: str, customer_id: str, raw_message: str,
     now = datetime.now(timezone.utc)
     result = resolve(raw_temporal_expression, now.replace(tzinfo=None))
 
+    observation = {"raw_temporal_expression": raw_temporal_expression, "sentiment": sentiment,
+                   "confidence": confidence}
     if not result["resolved"]:
         db = get_db()
         db.ptp.insert_one({
@@ -71,10 +74,23 @@ def set_ptp_lock(subscription_id: str, customer_id: str, raw_message: str,
             "sentiment": sentiment, "status": "ambiguous_pending_clarification",
             "grace_period_hours": 24, "created_at": now, "resolved_at": None,
         })
+        write_audit_log(
+            problem_id=7, tool_name="set_ptp_lock",
+            entity_refs={"subscription_id": subscription_id, "customer_id": customer_id},
+            observation=observation, decision={"action": "REQUEST_CLARIFICATION", "reason": result["reason"]},
+            execution={"status": "ambiguous"}, mcp_server="prob7_nlp_extract",
+        )
         return {"status": "ambiguous", "reason": result["reason"]}
 
     resolved_date = result["date"]
     if (resolved_date - now.replace(tzinfo=None)).days > PTP_CAP_DAYS:
+        write_audit_log(
+            problem_id=7, tool_name="set_ptp_lock",
+            entity_refs={"subscription_id": subscription_id, "customer_id": customer_id},
+            observation=observation,
+            decision={"action": "REJECT_BEYOND_CAP", "resolved_date": resolved_date.isoformat()},
+            execution={"status": "beyond_cap"}, mcp_server="prob7_nlp_extract",
+        )
         return {"status": "beyond_cap", "resolved_date": resolved_date.isoformat()}
 
     db = get_db()
@@ -93,6 +109,15 @@ def set_ptp_lock(subscription_id: str, customer_id: str, raw_message: str,
     r.zadd("watchdog_queue", {f"{subscription_id}:ptp_due": time.mktime(resolved_date.timetuple())})
 
     needs_escalation = sentiment == "HOSTILE"
+    write_audit_log(
+        problem_id=7, tool_name="set_ptp_lock",
+        entity_refs={"subscription_id": subscription_id, "customer_id": customer_id},
+        observation=observation,
+        decision={"action": "LOCK_PTP", "resolved_date": resolved_date.isoformat(),
+                  "resolution_method": result["method"]},
+        execution={"status": "locked", "escalation_needed": needs_escalation},
+        mcp_server="prob7_nlp_extract",
+    )
     return {
         "status": "locked",
         "resolved_date": resolved_date.isoformat(),
@@ -115,6 +140,11 @@ def clear_ptp_lock(subscription_id: str, outcome: str) -> dict:
         {"subscription_id": subscription_id, "status": "active"},
         {"$set": {"status": outcome, "resolved_at": datetime.now(timezone.utc)}},
     )
+    write_audit_log(
+        problem_id=7, tool_name="clear_ptp_lock", entity_refs={"subscription_id": subscription_id},
+        observation={}, decision={"action": "CLEAR_PTP_LOCK", "outcome": outcome},
+        execution={"status": "cleared"}, mcp_server="prob7_nlp_extract",
+    )
     return {"subscription_id": subscription_id, "outcome": outcome}
 
 
@@ -127,6 +157,11 @@ def escalate_for_review(subscription_id: str, reason: str) -> dict:
     db.ptp.update_one(
         {"subscription_id": subscription_id, "status": {"$in": ["active", "ambiguous_pending_clarification"]}},
         {"$set": {"escalated": True, "escalation_reason": reason}},
+    )
+    write_audit_log(
+        problem_id=7, tool_name="escalate_for_review", entity_refs={"subscription_id": subscription_id},
+        observation={"reason": reason}, decision={"action": "ESCALATE_HOSTILE_SENTIMENT"},
+        execution={"status": "escalated"}, mcp_server="prob7_nlp_extract",
     )
     return {"subscription_id": subscription_id, "escalated": True, "reason": reason}
 

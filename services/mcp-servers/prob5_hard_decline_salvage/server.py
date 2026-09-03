@@ -20,6 +20,8 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from fastmcp import FastMCP  # noqa: E402
 
+from rzp_agent_kit.audit import write_audit_log  # noqa: E402
+from rzp_agent_kit.wa_templates import build_delegation_artifact  # noqa: E402
 from rzp_common.mongo_client import get_db  # noqa: E402
 from rzp_common.subscription_lifecycle import (  # noqa: E402
     record_capture_and_check_duplicate,
@@ -71,7 +73,15 @@ def classify_decline(subscription_id: str, error_reason: str | None, amount: int
     """
     db = get_db()
     subscription = db.subscriptions.find_one({"razorpay_subscription_id": subscription_id})
+    observation = {"error_reason": error_reason, "amount": amount}
     if subscription and subscription.get("status") == "cancelled":
+        write_audit_log(
+            problem_id=5, tool_name="classify_decline",
+            entity_refs={"subscription_id": subscription_id}, observation=observation,
+            decision={"action": "STOP_IF_USER_CANCELLED"}, execution={"status": "skipped"},
+            stopping_rule_check={"rule": "STOP_IF_USER_CANCELLED", "fired": True},
+            mcp_server="prob5_hard_decline_salvage",
+        )
         return {"classification": "skipped", "reason": "STOP_IF_USER_CANCELLED"}
 
     threshold = _get_afa_threshold(is_exempt_category)
@@ -86,6 +96,7 @@ def classify_decline(subscription_id: str, error_reason: str | None, amount: int
         {"$set": {"current_cycle_decline_classification": classification}},
     )
 
+    scheduled = False
     if is_hard:
         result = db.subscriptions.find_one_and_update(
             {"razorpay_subscription_id": subscription_id, "hard_decline_link_sent": {"$ne": True}},
@@ -93,17 +104,29 @@ def classify_decline(subscription_id: str, error_reason: str | None, amount: int
         )
         if result is not None:
             schedule_hard_decline_link(subscription_id)
+            scheduled = True
 
+    write_audit_log(
+        problem_id=5, tool_name="classify_decline",
+        entity_refs={"subscription_id": subscription_id}, observation=observation,
+        decision={"action": "CLASSIFY", "classification": classification, "afa_threshold_used": threshold},
+        execution={"status": "hard_decline_link_scheduled" if scheduled else "no_link_action"},
+        mcp_server="prob5_hard_decline_salvage",
+    )
     return {"classification": classification, "afa_threshold_used": threshold}
 
 
 @mcp.tool()
 def generate_hard_decline_link(subscription_id: str, invoice_id: str, amount: int,
-                                customer_name: str, customer_contact: str) -> dict:
+                                customer_name: str, customer_contact: str,
+                                customer_id: str | None = None) -> dict:
     """Called when the T+5h watchdog checkpoint fires and the subscription is
     still genuinely unpaid (re-verify before calling this - the caller's job,
     same STOP_IF_ALREADY_RESOLVED idempotency principle as Problem 3). Creates
-    the one manual Payment Link tied to the specific pending invoice."""
+    the one manual Payment Link tied to the specific pending invoice, and
+    builds the two-hop delegation artifact for the Orchestrator to hand to the
+    Conversational NLP Agent — deterministic, same pattern as Problem 3's
+    generate_recovery_link."""
     link = create_payment_link(
         amount=amount,
         currency="INR",
@@ -112,7 +135,19 @@ def generate_hard_decline_link(subscription_id: str, invoice_id: str, amount: in
         expire_by=_expire_by_epoch(),
         customer={"name": customer_name, "contact": customer_contact},
     )
-    return {"payment_link_id": link["id"], "short_url": link["short_url"]}
+    delegation = build_delegation_artifact(
+        customer_id, customer_contact, "hard_decline_link",
+        {"name": customer_name, "link": link["short_url"]},
+    )
+    write_audit_log(
+        problem_id=5, tool_name="generate_hard_decline_link",
+        entity_refs={"subscription_id": subscription_id, "invoice_id": invoice_id},
+        observation={"amount": amount},
+        decision={"action": "SEND_HARD_DECLINE_LINK", "template": "hard_decline_link"},
+        execution={"status": "link_created", "payment_link_id": link["id"]},
+        mcp_server="prob5_hard_decline_salvage",
+    )
+    return {"payment_link_id": link["id"], "short_url": link["short_url"], **delegation}
 
 
 @mcp.tool()
@@ -121,19 +156,37 @@ def reverse_duplicate_capture(subscription_id: str, payment_id: str) -> dict:
     webhook handler on every subscription-linked payment.captured. If this is
     a genuine second capture for the same cycle, issues a REAL refund (unlike
     Problem 3's deliberately-scoped-down inventory-race edge case, a duplicate
-    charge is real customer financial harm, not a cosmetic one) and reports it
-    so the caller can proactively notify the customer via the two-hop
-    delegation to the Conversational NLP Agent."""
+    charge is real customer financial harm, not a cosmetic one) and builds the
+    two-hop delegation artifact to proactively notify the customer, looking up
+    their contact details from the subscription's linked customer record since
+    - unlike generate_hard_decline_link - this tool is only ever given IDs."""
     check = record_capture_and_check_duplicate(subscription_id, payment_id)
     if not check["is_duplicate"]:
         return {"duplicate_detected": False}
 
     refund = get_client().payment.refund(check["second_payment_id"], {})
+    db = get_db()
+    subscription = db.subscriptions.find_one({"razorpay_subscription_id": subscription_id}) or {}
+    customer = db.customers.find_one({"razorpay_customer_id": subscription.get("customer_id")}) or {}
+
+    delegation = build_delegation_artifact(
+        subscription.get("customer_id"), customer.get("phone", ""), "duplicate_charge_refunded",
+        {"name": customer.get("name") or "Customer", "amount": refund.get("amount", 0)},
+    )
+    write_audit_log(
+        problem_id=5, tool_name="reverse_duplicate_capture",
+        entity_refs={"subscription_id": subscription_id, "payment_id": payment_id},
+        observation={"first_payment_id": check["first_payment_id"]},
+        decision={"action": "REFUND_DUPLICATE"},
+        execution={"status": "refunded", "refund_id": refund.get("id")},
+        mcp_server="prob5_hard_decline_salvage",
+    )
     return {
         "duplicate_detected": True,
         "first_payment_id": check["first_payment_id"],
         "refunded_payment_id": check["second_payment_id"],
         "refund_id": refund.get("id"),
+        **delegation,
     }
 
 

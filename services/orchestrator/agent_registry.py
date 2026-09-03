@@ -22,6 +22,12 @@ AGENT_NAMES = {
     "http://localhost:9005": "B2B Receivables Agent",
 }
 
+# Named separately (2026-09-03, two-hop delegation fix): every WhatsApp send
+# delegation artifact from any of the other 3 agents targets this one agent
+# specifically, regardless of which problem originated it - derived from the
+# same mapping above rather than a second hardcoded URL.
+CONVERSATIONAL_NLP_AGENT_URL = PROBLEM_TO_AGENT_URL[7]
+
 
 def resolve_agent_url(problem_id: int) -> str:
     if problem_id not in PROBLEM_TO_AGENT_URL:

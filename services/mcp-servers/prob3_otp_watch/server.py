@@ -21,6 +21,8 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from fastmcp import FastMCP  # noqa: E402
 
+from rzp_agent_kit.audit import write_audit_log  # noqa: E402
+from rzp_agent_kit.wa_templates import build_delegation_artifact  # noqa: E402
 from rzp_razorpay_client.client import create_payment_link, fetch_order_payments  # noqa: E402
 from inventory import check_stock  # noqa: E402
 from watchdog import claim_ghost_debit, schedule_stage2  # noqa: E402
@@ -56,6 +58,13 @@ def claim_order_as_ghost_debit(order_id: str, payment_id: str) -> dict:
     and clears any remaining watchdog checkpoints so no recovery message ever
     fires for an order that already succeeded."""
     claim_ghost_debit(order_id, payment_id)
+    write_audit_log(
+        problem_id=3, tool_name="claim_order_as_ghost_debit",
+        entity_refs={"order_id": order_id, "payment_id": payment_id},
+        observation={"source": "agent_initiated_verification"},
+        decision={"action": "CLAIM_GHOST_DEBIT"}, execution={"status": "claimed"},
+        mcp_server="prob3_otp_watch",
+    )
     return {"status": "claimed", "order_id": order_id, "payment_id": payment_id}
 
 
@@ -74,16 +83,25 @@ def schedule_second_checkpoint(order_id: str) -> dict:
     'under 15 minutes reads as intrusive' finding from the design's real-world
     grounding)."""
     schedule_stage2(order_id)
+    write_audit_log(
+        problem_id=3, tool_name="schedule_second_checkpoint", entity_refs={"order_id": order_id},
+        observation={"stage": 1, "still_unpaid": True},
+        decision={"action": "SCHEDULE_STAGE2", "reason": "avoid_under_15min_intrusiveness"},
+        execution={"status": "stage2_scheduled"}, mcp_server="prob3_otp_watch",
+    )
     return {"status": "stage2_scheduled", "order_id": order_id}
 
 
 @mcp.tool()
 def generate_recovery_link(order_id: str, amount: int, customer_name: str,
-                            customer_contact: str) -> dict:
+                            customer_contact: str, customer_id: str | None = None) -> dict:
     """Generate the one allowed recovery Payment Link for a genuinely unpaid,
-    still-in-stock checkout — 15-minute expiry, per the design. The actual send
-    happens via the two-hop delegation to the Conversational NLP Agent, not here;
-    this tool only creates the link Razorpay-side."""
+    still-in-stock checkout — 15-minute expiry, per the design. Also builds the
+    two-hop delegation artifact for the Orchestrator to hand to the
+    Conversational NLP Agent — deterministic (the template and its variables
+    are fully known from this tool's own arguments plus the link it just
+    created), not left to the caller's LLM to restate correctly.
+    customer_id is optional since a guest checkout may not have one yet."""
     link = create_payment_link(
         amount=amount,
         currency="INR",
@@ -92,7 +110,18 @@ def generate_recovery_link(order_id: str, amount: int, customer_name: str,
         expire_by=_expire_by_epoch(),
         customer={"name": customer_name, "contact": customer_contact},
     )
-    return {"payment_link_id": link["id"], "short_url": link["short_url"]}
+    delegation = build_delegation_artifact(
+        customer_id, customer_contact, "checkout_recovery_link",
+        {"name": customer_name, "amount": amount, "link": link["short_url"]},
+    )
+    write_audit_log(
+        problem_id=3, tool_name="generate_recovery_link", entity_refs={"order_id": order_id},
+        observation={"amount": amount},
+        decision={"action": "SEND_RECOVERY_LINK", "template": "checkout_recovery_link"},
+        execution={"status": "link_created", "payment_link_id": link["id"]},
+        mcp_server="prob3_otp_watch",
+    )
+    return {"payment_link_id": link["id"], "short_url": link["short_url"], **delegation}
 
 
 def _expire_by_epoch() -> int:

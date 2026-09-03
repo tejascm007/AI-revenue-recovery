@@ -16,16 +16,25 @@ must be built via a2a.helpers.proto_helpers (new_text_message, get_message_text)
 not by passing kwargs directly.
 """
 
+import sys
 from pathlib import Path
 
 _CODES_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_CODES_ROOT / "libs"))  # first use in this process: rzp_agent_kit below
 
-from a2a.helpers.proto_helpers import new_text_message
+from a2a.helpers.proto_helpers import (
+    new_data_artifact_update_event,
+    new_text_message,
+    new_text_status_update_event,
+)
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
+from a2a.types import TaskState
 from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
+
+from rzp_agent_kit.two_hop import find_delegation_artifact
 
 SERVERS = {
     "prob2_route": {
@@ -95,12 +104,34 @@ class CheckoutSalvageAgentExecutor(AgentExecutor):
             return
 
         tool_messages = []
+        raw_results = []
         for call in response.tool_calls:
             result = await named_tools[call["name"]].ainvoke(call["args"])
+            raw_results.append(result)
             tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
 
+        # Two-hop delegation fix (2026-09-03): extracted deterministically from
+        # the tool's own structured result, not left to the LLM's final-turn
+        # text to restate correctly - see libs/rzp_agent_kit/two_hop.py.
+        artifact = find_delegation_artifact(raw_results)
+        if artifact is not None:
+            await event_queue.enqueue_event(new_data_artifact_update_event(
+                task_id=context.task_id, context_id=context.context_id,
+                name="two_hop_delegation", data=artifact,
+            ))
+
         final = await llm_with_tools.ainvoke([*messages, response, *tool_messages])
-        await event_queue.enqueue_event(new_text_message(final.content))
+        if artifact is not None:
+            # Verified (2026-09-03): once a TaskArtifactUpdateEvent has been
+            # enqueued, the SDK requires the response to complete via a Task
+            # status event, not a bare Message - "Received Message object in
+            # task mode" is a real InvalidAgentResponseError, not a guess.
+            await event_queue.enqueue_event(new_text_status_update_event(
+                task_id=context.task_id, context_id=context.context_id,
+                state=TaskState.TASK_STATE_COMPLETED, text=final.content,
+            ))
+        else:
+            await event_queue.enqueue_event(new_text_message(final.content))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # This agent's tool calls are all fast/synchronous (deterministic Mongo/

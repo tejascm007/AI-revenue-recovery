@@ -24,6 +24,7 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from fastmcp import FastMCP  # noqa: E402
 
+from rzp_agent_kit.audit import write_audit_log  # noqa: E402
 from rzp_common.mongo_client import get_db  # noqa: E402
 from rzp_common.redis_client import get_redis  # noqa: E402
 from telemetry import _route_prefix, prune_and_count  # noqa: E402
@@ -95,8 +96,16 @@ def _get_route_status_impl(method: str, instrument_key: str) -> dict:
 def _suggest_alternate_impl(customer_id: str, failed_method: str, failed_instrument: str) -> dict:
     db = get_db()
     customer = db.customers.find_one({"razorpay_customer_id": customer_id})
+    observation = {"failed_method": failed_method, "failed_instrument": failed_instrument}
     if not customer:
-        return {"suggestion": None, "reason": "customer_not_found"}
+        result = {"suggestion": None, "reason": "customer_not_found"}
+        write_audit_log(
+            problem_id=2, tool_name="suggest_alternate_route",
+            entity_refs={"customer_id": customer_id}, observation=observation,
+            decision={"action": "NO_SUGGESTION", "reason": "customer_not_found"},
+            execution={"status": "no_action"}, mcp_server="prob2_route",
+        )
+        return result
 
     for token in customer.get("vault_tokens", []):
         if token.get("status") != "active":
@@ -106,7 +115,7 @@ def _suggest_alternate_impl(customer_id: str, failed_method: str, failed_instrum
             continue  # don't re-suggest the exact same failing instrument
         alt_status = _get_route_status_impl(token.get("method", "card"), issuer)
         if alt_status["status"] == "healthy":
-            return {
+            result = {
                 "suggestion": {
                     "type": "saved_token",
                     "token_id": token["token_id"],
@@ -114,11 +123,26 @@ def _suggest_alternate_impl(customer_id: str, failed_method: str, failed_instrum
                 },
                 "reason": "healthy_saved_alternate",
             }
+            write_audit_log(
+                problem_id=2, tool_name="suggest_alternate_route",
+                entity_refs={"customer_id": customer_id}, observation=observation,
+                decision={"action": "SUGGEST_SAVED_TOKEN", "reason": "healthy_saved_alternate"},
+                execution={"status": "suggested", "token_id": token["token_id"]},
+                mcp_server="prob2_route",
+            )
+            return result
 
-    return {
+    result = {
         "suggestion": {"type": "generic_method_switch", "suggested_method": "upi"},
         "reason": "no_healthy_saved_alternate_found",
     }
+    write_audit_log(
+        problem_id=2, tool_name="suggest_alternate_route",
+        entity_refs={"customer_id": customer_id}, observation=observation,
+        decision={"action": "SUGGEST_GENERIC_SWITCH", "reason": "no_healthy_saved_alternate_found"},
+        execution={"status": "suggested", "suggested_method": "upi"}, mcp_server="prob2_route",
+    )
+    return result
 
 
 @mcp.tool()

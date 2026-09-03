@@ -21,6 +21,8 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from fastmcp import FastMCP  # noqa: E402
 
+from rzp_agent_kit.audit import write_audit_log  # noqa: E402
+from rzp_agent_kit.wa_templates import TEMPLATE_CATALOG  # noqa: E402
 from rzp_common.mongo_client import get_db  # noqa: E402
 from rzp_common.redis_client import get_redis  # noqa: E402
 from rzp_meta_wa_client.client import send_template_message, send_text_message  # noqa: E402
@@ -29,24 +31,22 @@ mcp = FastMCP("Prob8MetaWaApi")
 
 CSW_WINDOW_SECONDS = 24 * 3600
 NEW_ACCOUNT_TIER_LIMIT = 250  # Meta's starting tier for a new Business Portfolio
+# TEMPLATE_CATALOG now lives in libs/rzp_agent_kit/wa_templates.py — shared with
+# every producer tool that builds a two-hop delegation artifact naming one of
+# these templates, so the two copies can never drift apart (the concrete bug
+# this fixed: Problem 9 referenced templates that were never added here).
 
-# Representative catalog, not exhaustive — every entry is "utility" category
-# per the design's decision (never marketing), and the {var} names below are
-# purely for our own validation, not what Meta's template-approval system
-# itself enforces.
-TEMPLATE_CATALOG = {
-    "checkout_recovery_link": ["name", "amount", "link"],
-    "ghost_debit_reassurance": ["name", "amount"],
-    "hard_decline_link": ["name", "link"],
-    "duplicate_charge_refunded": ["name", "amount"],
-    "dunning_touch_1": ["name", "link"],
-    "dunning_touch_2": ["name", "link"],
-    "dunning_touch_3": ["name", "link"],
-    "ptp_clarifying_question": ["name", "raw_expression"],
-    "waitlist_notice": ["name"],
-    "extension_granted": ["name", "new_date"],
-    "extension_declined": ["name"],
-}
+
+def _format_template_var(value) -> str:
+    """A variable arriving via the two-hop delegation path (verified,
+    2026-09-03) has been round-tripped through a protobuf google.protobuf.Struct,
+    whose Value type has no integer variant — a paise amount like 50000 comes
+    back as 50000.0. Rendered as-is that reads as "Rs 50000.0" in the actual
+    outbound message; whole-number floats are coerced back to int first so a
+    direct MCP call and a delegated one produce byte-identical message text."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 @mcp.tool()
@@ -72,14 +72,16 @@ def _check_and_record_quota() -> dict:
 
 
 @mcp.tool()
-def send_whatsapp_message(customer_id: str, phone: str, template_id: str,
+def send_whatsapp_message(customer_id: str | None, phone: str, template_id: str,
                            variables: dict) -> dict:
     """The one send path for the whole project. Business-initiated sends
     (outside CSW) always use the pre-approved template regardless of what
     check_csw_status says; free-form is never used for a proactive send even
     when the window happens to be open, since every use case here is a
     structured template already. Records to `communications` regardless of
-    outcome."""
+    outcome. customer_id may be None for a guest checkout (Problem 3) — quota
+    tracking falls back to phone as the identity key in that case, since a
+    None key can't dedupe anything."""
     if template_id not in TEMPLATE_CATALOG:
         raise ValueError(f"Unknown template_id: {template_id!r}")
 
@@ -88,6 +90,7 @@ def send_whatsapp_message(customer_id: str, phone: str, template_id: str,
     if missing:
         raise ValueError(f"Missing required template variables: {missing}")
 
+    identity_key = customer_id or phone
     quota = _check_and_record_quota()
     db = get_db()
     now = datetime.now(timezone.utc)
@@ -99,13 +102,20 @@ def send_whatsapp_message(customer_id: str, phone: str, template_id: str,
             "sent_at": now, "delivered_at": None, "meta_message_id": None,
             "quiet_hours_check": None, "frequency_cap_check": {"queued": True, "reason": "near_tier_limit"},
         })
+        write_audit_log(
+            problem_id=8, tool_name="send_whatsapp_message",
+            entity_refs={"customer_id": customer_id, "phone": phone},
+            observation={"template_id": template_id, "quota": quota},
+            decision={"action": "QUEUE", "reason": "near_tier_limit"},
+            execution={"status": "queued"}, mcp_server="prob8_meta_wa_api",
+        )
         return {"status": "queued", "reason": "near_tier_limit"}
 
-    body_parameters = [str(variables[v]) for v in required_vars]
+    body_parameters = [_format_template_var(variables[v]) for v in required_vars]
     result = send_template_message(phone, template_id, body_parameters=body_parameters)
 
     r = get_redis()
-    r.zadd("wa_quota_window", {customer_id: time.time()})
+    r.zadd("wa_quota_window", {identity_key: time.time()})
 
     db.communications.insert_one({
         "customer_id": customer_id, "channel": "whatsapp", "direction": "outbound",
@@ -113,6 +123,13 @@ def send_whatsapp_message(customer_id: str, phone: str, template_id: str,
         "sent_at": now, "delivered_at": None, "meta_message_id": result.get("messages", [{}])[0].get("id"),
         "quiet_hours_check": None, "frequency_cap_check": {"queued": False},
     })
+    write_audit_log(
+        problem_id=8, tool_name="send_whatsapp_message",
+        entity_refs={"customer_id": customer_id, "phone": phone},
+        observation={"template_id": template_id, "variables": variables},
+        decision={"action": "SEND"}, execution={"status": "sent"},
+        mcp_server="prob8_meta_wa_api",
+    )
     return {"status": "sent", "meta_message_id": result.get("messages", [{}])[0].get("id")}
 
 
@@ -138,6 +155,12 @@ def send_freeform_reply(customer_id: str, phone: str, text: str) -> dict:
         "meta_message_id": result.get("messages", [{}])[0].get("id"),
         "quiet_hours_check": None, "frequency_cap_check": None,
     })
+    write_audit_log(
+        problem_id=8, tool_name="send_freeform_reply",
+        entity_refs={"customer_id": customer_id, "phone": phone},
+        observation={"csw_open": True}, decision={"action": "SEND_FREEFORM"},
+        execution={"status": "sent"}, mcp_server="prob8_meta_wa_api",
+    )
     return {"status": "sent", "meta_message_id": result.get("messages", [{}])[0].get("id")}
 
 

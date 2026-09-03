@@ -170,6 +170,11 @@ def main():
             "current_cycle_payment_ids": {"bsonType": ["array", "null"]},
             "dunning_sequence_stage": {"bsonType": ["int", "null"]},
             "dunning_link_id": {"bsonType": ["string", "null"]},
+            # Gap fix (2026-09-03): only the Razorpay entity ID was stored, not
+            # the short_url itself — evaluate_next_touch needs the actual link
+            # to build each touch's WhatsApp delegation artifact and had no way
+            # to recover it without this.
+            "dunning_link_short_url": {"bsonType": ["string", "null"]},
             "dunning_started_at": {"bsonType": ["date", "null"]},
             "terminal_action_at": {"bsonType": ["date", "null"]},
         },
@@ -181,9 +186,14 @@ def main():
     print("\n[Permanent] communications  (all outbound/inbound WhatsApp, Problem 8 system of record)")
     communications = ensure_collection(db, "communications", {
         "bsonType": "object",
-        "required": ["customer_id", "channel", "direction", "sent_at"],
+        "required": ["channel", "direction", "sent_at"],
         "properties": {
-            "customer_id": {"bsonType": "string"},
+            # Nullable (gap fix, 2026-09-03): a Problem 3 recovery send can be
+            # for a guest checkout with no razorpay_customer_id yet, mirroring
+            # the same nullability already on checkout_sessions/payments.
+            # send_whatsapp_message falls back to phone as the identity key
+            # for quota-tracking when this is null.
+            "customer_id": {"bsonType": ["string", "null"]},
             "channel": {"bsonType": "string"},
             "direction": {"bsonType": "string"},
             "template_id": {"bsonType": ["string", "null"]},

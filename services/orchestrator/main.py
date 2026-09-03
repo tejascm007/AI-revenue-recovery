@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rzp_common.redis_client import get_redis  # noqa: E402
 
-from a2a_dispatch import build_instruction, dispatch  # noqa: E402
-from agent_registry import AGENT_NAMES, resolve_agent_url  # noqa: E402
+from a2a_dispatch import build_delegation_instruction, build_instruction, dispatch  # noqa: E402
+from agent_registry import AGENT_NAMES, CONVERSATIONAL_NLP_AGENT_URL, resolve_agent_url  # noqa: E402
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 TOPIC = "revenue-recovery-events"
@@ -58,9 +58,22 @@ async def handle_event(event: dict) -> None:
 
     try:
         result = await dispatch(agent_url, instruction)
-        print(f"[result] {AGENT_NAMES[agent_url]}: {result[:300]}")
+        print(f"[result] {AGENT_NAMES[agent_url]}: {result['text'][:300]}")
     except Exception as exc:  # noqa: BLE001 - a bad agent response must not crash the consumer loop
         print(f"[error] dispatch to {AGENT_NAMES[agent_url]} failed: {type(exc).__name__}: {exc}")
+        return
+
+    for artifact in result["delegation_artifacts"]:
+        if artifact.get("action") != "send_whatsapp":
+            print(f"[warn] unrecognized delegation artifact action: {artifact.get('action')!r}")
+            continue
+        delegation_instruction = build_delegation_instruction(artifact)
+        print(f"[two-hop] {AGENT_NAMES[agent_url]} -> Conversational NLP Agent: send_whatsapp")
+        try:
+            second_result = await dispatch(CONVERSATIONAL_NLP_AGENT_URL, delegation_instruction)
+            print(f"[two-hop result] Conversational NLP Agent: {second_result['text'][:300]}")
+        except Exception as exc:  # noqa: BLE001 - same rationale as the first hop
+            print(f"[error] two-hop dispatch to Conversational NLP Agent failed: {type(exc).__name__}: {exc}")
 
 
 async def consume_loop() -> None:
