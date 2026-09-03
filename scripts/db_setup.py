@@ -33,8 +33,22 @@ SEVEN_DAYS = 7 * DAY
 
 
 def ensure_collection(db, name, validator=None):
+    # Bug fix (2026-09-03): the original version only applied `validator` when
+    # CREATING a collection - re-running after adding a field to an already-
+    # existing collection's schema (e.g. ptp's "escalated"/"escalation_reason")
+    # silently left the live validator stale, the same class of "new field
+    # doesn't get applied to an existing document/collection" gap already
+    # fixed once for merchant_config's seeding. `collMod` applies the current
+    # validator to an existing collection too, so schema changes always land.
     if name in db.list_collection_names():
-        print(f"  - '{name}' already exists (schema/indexes will still be ensured)")
+        if validator:
+            db.command({
+                "collMod": name,
+                "validator": {"$jsonSchema": validator},
+                "validationLevel": "moderate",
+                "validationAction": "warn",
+            })
+        print(f"  - '{name}' already exists (validator updated via collMod, indexes still ensured)")
         return db[name]
     kwargs = {}
     if validator:
@@ -205,6 +219,8 @@ def main():
             "grace_period_hours": {"bsonType": ["int", "null"]},
             "created_at": {"bsonType": "date"},
             "resolved_at": {"bsonType": ["date", "null"]},
+            "escalated": {"bsonType": ["bool", "null"]},
+            "escalation_reason": {"bsonType": ["string", "null"]},
         },
     })
     ptp.create_index([("subscription_id", ASCENDING)], name="idx_subscription_id")
