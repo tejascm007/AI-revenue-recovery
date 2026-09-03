@@ -15,7 +15,7 @@ Run directly:
 
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _CODES_ROOT = Path(__file__).resolve().parents[3]
@@ -103,10 +103,18 @@ def set_ptp_lock(subscription_id: str, customer_id: str, raw_message: str,
         "created_at": now, "resolved_at": None,
     })
 
+    # Gap fix (2026-09-03): the watchdog checkpoint used to fire at the bare
+    # resolved_date, contradicting the stored grace_period_hours (24) that
+    # the "ptp_active" Redis flag's own TTL already correctly accounted for -
+    # meaning a "due" check would have fired while the customer's promise
+    # window, by our own stated policy, hadn't actually elapsed yet.
+    grace_period_hours = 24
+    due_at = resolved_date + timedelta(hours=grace_period_hours)
+
     r = get_redis()
     ttl_seconds = int((resolved_date - now.replace(tzinfo=None)).total_seconds()) + (24 * 3600) + 3600
     r.set(f"ptp_active:{subscription_id}", resolved_date.isoformat(), ex=max(ttl_seconds, 60))
-    r.zadd("watchdog_queue", {f"{subscription_id}:ptp_due": time.mktime(resolved_date.timetuple())})
+    r.zadd("watchdog_queue", {f"{subscription_id}:ptp_due": time.mktime(due_at.timetuple())})
 
     needs_escalation = sentiment == "HOSTILE"
     write_audit_log(

@@ -18,14 +18,21 @@ STAGE1_DELAY_SECONDS = 120   # T+2min: ground-truth verification only, no messag
 STAGE2_DELAY_SECONDS = 900   # T+15min total: re-verify, then the one allowed message
 
 
-def schedule_watchdog(order_id: str, customer_id: str, amount: int) -> None:
+def schedule_watchdog(order_id: str, customer_id: str | None, amount: int,
+                       customer_name: str | None = None, customer_contact: str | None = None) -> None:
     """Flow A: called the moment our backend creates the order. Synchronous,
-    non-agentic."""
+    non-agentic. customer_id is nullable (a guest checkout may not have one),
+    but customer_name/customer_contact should be supplied whenever available -
+    they're what generate_recovery_link actually needs to reach the customer,
+    and re-deriving them from customer_id at watchdog-fire time wouldn't work
+    for a guest checkout anyway (gap fix, 2026-09-03)."""
     db = get_db()
     db.checkout_sessions.update_one(
         {"_id": order_id},
         {"$set": {
             "customer_id": customer_id,
+            "customer_name": customer_name,
+            "customer_contact": customer_contact,
             "stage": "created",
             "amount": amount,
             "emi_suggestion_count": 0,

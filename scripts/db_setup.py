@@ -440,6 +440,14 @@ def main():
         "properties": {
             "_id": {"bsonType": "string"},
             "customer_id": {"bsonType": ["string", "null"]},
+            # Gap fix (2026-09-03): nothing stored the actual contact details
+            # needed to reach a customer on a recovery link - customer_id alone
+            # doesn't help for a guest checkout (nullable, by design), and even
+            # for a registered customer, re-fetching name/phone from Razorpay
+            # or the customers collection on every watchdog checkpoint is an
+            # avoidable extra lookup. Captured once at order-creation time.
+            "customer_name": {"bsonType": ["string", "null"]},
+            "customer_contact": {"bsonType": ["string", "null"]},
             "stage": {"bsonType": "string"},
             "amount": {"bsonType": ["int", "long", "double", "null"]},
             "emi_suggestion_count": {"bsonType": ["int", "null"]},

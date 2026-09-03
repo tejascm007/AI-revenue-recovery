@@ -19,6 +19,32 @@ def _checkpoint_key(invoice_id: str, day_offset: int) -> str:
     return f"{invoice_id}:t_{sign}_{abs(day_offset)}"
 
 
+def parse_checkpoint_day_offset(suffix: str) -> int | None:
+    """Inverse of _checkpoint_key's suffix half - "t_plus_7" -> 7,
+    "t_minus_3" -> -3. Returns None for a suffix that isn't this format."""
+    parts = suffix.split("_")
+    if len(parts) != 3 or parts[0] != "t" or parts[1] not in ("plus", "minus"):
+        return None
+    try:
+        value = int(parts[2])
+    except ValueError:
+        return None
+    return -value if parts[1] == "minus" else value
+
+
+def mark_escalation_stage_completed(invoice_id: str, day_offset: int) -> None:
+    """Gap fix (2026-09-03): escalation_stage_completed was initialized to []
+    at scheduling time but nothing ever appended to it when a checkpoint
+    actually fired - a write-only field. Called by the watchdog poller the
+    moment a checkpoint pops, independent of what the agent decides to do
+    with it, since firing IS the completion of that scheduling point."""
+    db = get_db()
+    db.invoices.update_one(
+        {"razorpay_invoice_id": invoice_id},
+        {"$addToSet": {"escalation_stage_completed": day_offset}},
+    )
+
+
 def schedule_escalation_checkpoints(invoice_id: str, due_date: datetime) -> None:
     db = get_db()
     config = db.merchant_config.find_one({"_id": "merchant_config"}) or {}
