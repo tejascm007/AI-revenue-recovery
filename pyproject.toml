@@ -11,5 +11,6 @@ dependencies = [
     "mcp>=1.24.0,<2.0.0",
     "pymongo>=4.17.0",
     "python-dotenv>=1.2.3",
+    "razorpay>=2.0.1",
     "redis>=8.1.0",
 ]

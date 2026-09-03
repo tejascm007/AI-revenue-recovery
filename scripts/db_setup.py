@@ -288,41 +288,67 @@ def main():
             "tds_expected_percent": {"bsonType": ["int", "double", "null"]},
             "escalation_contacts": {"bsonType": ["object", "null"]},
             "faq_min_confidence": {"bsonType": ["double", "null"]},
+            "emi_provider_priority": {"bsonType": ["array", "null"]},
         },
     })
     # single-document collection; default _id index is sufficient, no extra indexes needed.
     # Seed the one config document with the decided defaults from the design doc, but only
     # on first creation ($setOnInsert) — re-running this script must never clobber a merchant's
     # own edits to these settings.
+    # Bug fix (2026-09-03): a single $setOnInsert only applies when the whole
+    # document is being newly created — it silently does NOT backfill a new
+    # field onto a document that already exists (confirmed by hitting exactly
+    # this when emi_provider_priority was added after merchant_config had
+    # already been created on a prior run). Seeding per-field with an
+    # {field: {"$exists": False}} filter backfills any missing default on every
+    # re-run without ever touching a field the merchant has already customized.
+    MERCHANT_CONFIG_DEFAULTS = {
+        # Problem 5: RBI AFA threshold override for insurance/mutual-fund/credit-card-bill
+        # categories (standard AFA threshold itself is the regulatory Rs 15,000, not stored
+        # here since it's not merchant-configurable; this field is only the Rs 1,00,000
+        # category exemption).
+        "afa_override_threshold": 100000,
+        # Problem 7: decided default (2026-09-03), still merchant-configurable.
+        "ptp_grace_period_hours": 24,
+        # Problem 6: Touch1@halted+0, Touch2@+4d, Touch3@+9d, downgrade-check@+11d.
+        "dunning_touch_spacing_days": [0, 4, 9, 11],
+        # Problem 9: T-3/T+1/T+7/T+14/T+30/T+45/T+60, research-backed cadence.
+        "b2b_escalation_schedule_days": [-3, 1, 7, 14, 30, 45, 60],
+        # Problem 9: Section 43B(h) citation at T+45 only fires if this is explicitly
+        # true — never assumed. Defaults false; the merchant must confirm MSME status.
+        "msme_registered": False,
+        # Problem 9: no universal default exists (TDS % is transaction-type-specific,
+        # a legal fact not a system tunable) — 0 until the merchant configures the
+        # actual expected rate for their invoice categories.
+        "tds_expected_percent": 0,
+        "escalation_contacts": {"procurement": "email", "finance": "email"},
+        # Problem 8: seed value from the doc's own worked audit example; needs empirical
+        # tuning against the real FAQ corpus once one exists.
+        "faq_min_confidence": 0.65,
+        # Problem 4: confirmed Razorpay cardless EMI providers, priority order is a
+        # reasonable default (no verified provider-quality data) - merchant can
+        # reorder/trim to whichever providers they've actually enabled.
+        "emi_provider_priority": ["zestmoney", "hdfc", "icic", "idfb", "kkbk"],
+    }
+    # Bug fix, same session: upsert=True on the per-field filter below tried to
+    # INSERT a duplicate "_id":"merchant_config" whenever a field's $exists:False
+    # filter matched nothing because the field simply already had a value (not
+    # because the whole document was missing) — DuplicateKeyError. Splitting into
+    # "ensure the shell document exists" (once, its own upsert) then "backfill
+    # each missing field" (no upsert, the document is now guaranteed present)
+    # avoids ever re-attempting to create an _id that's already there.
     merchant_config.update_one(
-        {"_id": "merchant_config"},
-        {"$setOnInsert": {
-            # Problem 5: RBI AFA threshold override for insurance/mutual-fund/credit-card-bill
-            # categories (standard AFA threshold itself is the regulatory ₹15,000, not stored
-            # here since it's not merchant-configurable; this field is only the ₹1,00,000
-            # category exemption).
-            "afa_override_threshold": 100000,
-            # Problem 7: decided default (2026-09-03), still merchant-configurable.
-            "ptp_grace_period_hours": 24,
-            # Problem 6: Touch1@halted+0, Touch2@+4d, Touch3@+9d, downgrade-check@+11d.
-            "dunning_touch_spacing_days": [0, 4, 9, 11],
-            # Problem 9: T-3/T+1/T+7/T+14/T+30/T+45/T+60, research-backed cadence.
-            "b2b_escalation_schedule_days": [-3, 1, 7, 14, 30, 45, 60],
-            # Problem 9: Section 43B(h) citation at T+45 only fires if this is explicitly
-            # true — never assumed. Defaults false; the merchant must confirm MSME status.
-            "msme_registered": False,
-            # Problem 9: no universal default exists (TDS % is transaction-type-specific,
-            # a legal fact not a system tunable) — 0 until the merchant configures the
-            # actual expected rate for their invoice categories.
-            "tds_expected_percent": 0,
-            "escalation_contacts": {"procurement": "email", "finance": "email"},
-            # Problem 8: seed value from the doc's own worked audit example; needs empirical
-            # tuning against the real FAQ corpus once one exists.
-            "faq_min_confidence": 0.65,
-        }},
-        upsert=True,
+        {"_id": "merchant_config"}, {"$setOnInsert": {"_id": "merchant_config"}}, upsert=True
     )
-    print("  seeded default config document (only fields not already present)")
+    backfilled = []
+    for field, default_value in MERCHANT_CONFIG_DEFAULTS.items():
+        result = merchant_config.update_one(
+            {"_id": "merchant_config", field: {"$exists": False}},
+            {"$set": {field: default_value}},
+        )
+        if result.modified_count:
+            backfilled.append(field)
+    print(f"  seeded/backfilled config fields: {backfilled or '(none needed, already up to date)'}")
 
     print("\n[Permanent] faq_documents  (RAG corpus, Problem 8/9 open-ended Q&A ONLY — fixed "
           "regulatory citations live in merchant_config, not here, per the 2026-09-03 scope correction)")
@@ -399,6 +425,23 @@ def main():
         },
     })
     method_health_rollups.create_index([("bucket_start", ASCENDING)], expireAfterSeconds=SEVEN_DAYS, name="ttl_bucket_start")
+
+    print("\n[Permanent] inventory  (gap fix, 2026-09-03: Problem 3's stock-check/soft-lock "
+          "logic depends on this and it was never added to the schema in the design pass)")
+    inventory = ensure_collection(db, "inventory", {
+        "bsonType": "object",
+        "required": ["_id", "available_stock"],
+        "properties": {
+            "_id": {"bsonType": "string"},  # sku_id
+            "available_stock": {"bsonType": "int"},
+            "updated_at": {"bsonType": ["date", "null"]},
+        },
+    })
+    # No extra indexes needed: the _id index covers point lookups, and reservation
+    # is an atomic findOneAndUpdate keyed on _id (see prob3_otp_watch/inventory.py) —
+    # no separate lock collection required, Mongo's own document-level atomicity on
+    # a single findOneAndUpdate is exactly the "10-minute cart soft-lock" mechanism
+    # the design called for, without needing a companion Redis lock.
 
     print(f"\nDone. Collections in '{DB_NAME}': {sorted(db.list_collection_names())}")
 
