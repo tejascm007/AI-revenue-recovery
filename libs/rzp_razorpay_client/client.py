@@ -119,6 +119,28 @@ def create_payment_link(amount: int, currency: str, reference_id: str,
 
 
 @with_backoff
+def create_virtual_account(invoice_id: str, description: str,
+                            customer_id: str | None = None,
+                            close_by: int | None = None) -> dict:
+    """POST /v1/virtual_accounts — Problem 9's reconciliation mechanism. One
+    Virtual Account PER INVOICE (not per customer, per the design's redesign
+    from the original per-customer assumption) — the invoice_id goes in
+    `notes` so the virtual_account.credited webhook can match 1:1 back to
+    this invoice without fuzzy amount/UTR matching for the common case.
+    """
+    payload: dict[str, Any] = {
+        "receivers": {"types": ["bank_account", "vpa"]},
+        "description": description,
+        "notes": {"invoice_id": invoice_id},
+    }
+    if customer_id:
+        payload["customer_id"] = customer_id
+    if close_by:
+        payload["close_by"] = close_by
+    return get_client().virtual_account.create(payload)
+
+
+@with_backoff
 def cancel_payment_link(payment_link_id: str) -> dict:
     """POST /v1/payment_links/{id}/cancel — safe against an already-paid link
     per the confirmed research: cancelling one that's already paid errors
