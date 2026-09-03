@@ -31,8 +31,16 @@ import rzp_common.env  # noqa: F401  (side-effect import: loads codes/.env)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-5.6")
+LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-4o")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "openai/text-embedding-3-small")
+# Gap fix (2026-09-03, found by actually calling a paid model on a low-balance
+# OpenRouter account): langchain_openai's own default max_tokens ceiling for
+# gpt-4o (~16384) genuinely exceeds what a small account balance can afford,
+# producing a 402 "requires more credits, or fewer max_tokens" error on every
+# single call - not a rate limit, a per-request affordability check. Capped
+# here so every agent call actually goes through rather than failing by
+# default; raise via LLM_MAX_TOKENS once real budget exists.
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "1000"))
 
 
 def _require_key() -> None:
@@ -49,7 +57,10 @@ def get_chat_llm() -> ChatOpenAI:
     the point of use" pattern every other credentialed client in this
     project follows."""
     _require_key()
-    return ChatOpenAI(model=LLM_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE_URL)
+    return ChatOpenAI(
+        model=LLM_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE_URL,
+        max_tokens=LLM_MAX_TOKENS,
+    )
 
 
 def get_embeddings() -> OpenAIEmbeddings:
