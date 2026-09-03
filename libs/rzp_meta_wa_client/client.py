@@ -17,7 +17,18 @@ import httpx
 META_WA_ACCESS_TOKEN = os.environ.get("META_WA_ACCESS_TOKEN", "")
 META_WA_PHONE_NUMBER_ID = os.environ.get("META_WA_PHONE_NUMBER_ID", "")
 META_WA_APP_SECRET = os.environ.get("META_WA_APP_SECRET", "")
+META_WA_VERIFY_TOKEN = os.environ.get("META_WA_VERIFY_TOKEN", "")
 GRAPH_API_VERSION = "v21.0"
+
+
+def verify_subscription_challenge(mode: str | None, token: str | None) -> bool:
+    """Meta's one-time webhook registration handshake (a GET request with
+    hub.mode/hub.verify_token/hub.challenge query params, verified directly
+    against Meta's own docs, 2026-09-03) - distinct from the ongoing POST
+    deliveries verify_webhook_signature covers. The endpoint must echo back
+    hub.challenge as plain text on success; this only decides whether that's
+    warranted."""
+    return mode == "subscribe" and bool(META_WA_VERIFY_TOKEN) and token == META_WA_VERIFY_TOKEN
 
 
 def _require_credentials() -> None:

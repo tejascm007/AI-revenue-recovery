@@ -23,6 +23,7 @@ sys.path.insert(0, str(_CODES_ROOT / "services" / "mcp-servers" / "prob3_otp_wat
 from fastapi import FastAPI  # noqa: E402
 
 from api.checkout import router as checkout_router  # noqa: E402
+from api.meta_webhooks import router as meta_webhooks_router  # noqa: E402
 from api.vault import router as vault_router  # noqa: E402
 from api.webhooks import router as webhooks_router  # noqa: E402
 
@@ -30,6 +31,7 @@ PORT = 8000
 
 app = FastAPI(title="AI Revenue Recovery Engine - Backend")
 app.include_router(webhooks_router)
+app.include_router(meta_webhooks_router)
 app.include_router(vault_router)
 app.include_router(checkout_router)
 
