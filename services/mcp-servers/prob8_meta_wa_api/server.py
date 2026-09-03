@@ -50,12 +50,19 @@ def _format_template_var(value) -> str:
 
 
 @mcp.tool()
-def check_csw_status(customer_id: str) -> dict:
+def check_csw_status(customer_id: str | None, phone: str) -> dict:
     """Whether a free-form (non-template) send is currently allowed — the
     customer must have messaged us, or replied to a template, within the
-    last 24 hours."""
+    last 24 hours. Gap fix (2026-09-03, found by a real inbound WhatsApp
+    message from a sender with no matching customer record): customer_id
+    may be None for an unresolvable/guest sender, same as
+    send_whatsapp_message's existing fallback - falls back to phone as the
+    identity key, matching how meta_webhooks.py set this same key on
+    inbound (customer_id or phone), so the two sides can never disagree on
+    which key to check."""
     r = get_redis()
-    open_until = r.get(f"csw_open_until:{customer_id}")
+    identity_key = customer_id or phone
+    open_until = r.get(f"csw_open_until:{identity_key}")
     return {"csw_open": bool(open_until), "csw_open_until": open_until}
 
 
@@ -134,12 +141,13 @@ def send_whatsapp_message(customer_id: str | None, phone: str, template_id: str,
 
 
 @mcp.tool()
-def send_freeform_reply(customer_id: str, phone: str, text: str) -> dict:
+def send_freeform_reply(customer_id: str | None, phone: str, text: str) -> dict:
     """Free-form reply within an open CSW — e.g. answering a customer's
     follow-up question, or the PTP acknowledgment. Refuses outside the
     window rather than silently falling back to a template, since a template
-    can't carry arbitrary conversational text anyway."""
-    csw = check_csw_status(customer_id)
+    can't carry arbitrary conversational text anyway. customer_id may be
+    None for an unresolvable/guest sender (gap fix, 2026-09-03)."""
+    csw = check_csw_status(customer_id, phone)
     if not csw["csw_open"]:
         raise RuntimeError(
             f"CSW is not open for customer {customer_id} - cannot send free-form "
