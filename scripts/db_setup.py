@@ -289,6 +289,7 @@ def main():
             "escalation_contacts": {"bsonType": ["object", "null"]},
             "faq_min_confidence": {"bsonType": ["double", "null"]},
             "emi_provider_priority": {"bsonType": ["array", "null"]},
+            "subscription_terminal_action": {"bsonType": ["string", "null"]},
         },
     })
     # single-document collection; default _id index is sufficient, no extra indexes needed.
@@ -329,6 +330,11 @@ def main():
         # reasonable default (no verified provider-quality data) - merchant can
         # reorder/trim to whichever providers they've actually enabled.
         "emi_provider_priority": ["zestmoney", "hdfc", "icic", "idfb", "kkbk"],
+        # Problem 6: what happens to a subscription once the full dunning sequence
+        # exhausts unresolved. "paused" (not "cancelled") is the safer default -
+        # preserves the subscription so the customer can still reactivate later,
+        # rather than destructively cancelling on the merchant's behalf.
+        "subscription_terminal_action": "paused",
     }
     # Bug fix, same session: upsert=True on the per-field filter below tried to
     # INSERT a duplicate "_id":"merchant_config" whenever a field's $exists:False
