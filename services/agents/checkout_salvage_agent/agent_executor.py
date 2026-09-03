@@ -36,6 +36,8 @@ from langchain_openai import ChatOpenAI
 
 from rzp_agent_kit.two_hop import find_delegation_artifact
 
+MAX_TOOL_ROUNDS = 6  # safety cap against a runaway tool-calling loop
+
 SERVERS = {
     "prob2_route": {
         "transport": "stdio",
@@ -96,31 +98,41 @@ class CheckoutSalvageAgentExecutor(AgentExecutor):
         named_tools = {t.name: t for t in tools}
         llm_with_tools = self._get_llm().bind_tools(tools)
 
+        # Multi-round loop (gap fix, 2026-09-03): the old single fixed round
+        # of tool-calling couldn't express a multi-step decision (e.g.
+        # diagnose, then act on the diagnosis) - this loop is a strict
+        # superset of that behavior, since every existing single-tool-call
+        # case here still terminates after one round on its own.
         messages = [("system", SYSTEM_PROMPT), ("human", user_input)]
         response = await llm_with_tools.ainvoke(messages)
+        messages.append(response)
+        artifact = None
 
-        if not getattr(response, "tool_calls", None):
-            await event_queue.enqueue_event(new_text_message(response.content))
-            return
+        for _ in range(MAX_TOOL_ROUNDS):
+            if not getattr(response, "tool_calls", None):
+                break
+            tool_messages = []
+            raw_results = []
+            for call in response.tool_calls:
+                result = await named_tools[call["name"]].ainvoke(call["args"])
+                raw_results.append(result)
+                tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            messages.extend(tool_messages)
 
-        tool_messages = []
-        raw_results = []
-        for call in response.tool_calls:
-            result = await named_tools[call["name"]].ainvoke(call["args"])
-            raw_results.append(result)
-            tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            # Two-hop delegation fix (2026-09-03): extracted deterministically
+            # from the tool's own structured result, not left to the LLM's
+            # final-turn text to restate correctly - see libs/rzp_agent_kit/two_hop.py.
+            found = find_delegation_artifact(raw_results)
+            if found is not None:
+                artifact = found
+                await event_queue.enqueue_event(new_data_artifact_update_event(
+                    task_id=context.task_id, context_id=context.context_id,
+                    name="two_hop_delegation", data=artifact,
+                ))
 
-        # Two-hop delegation fix (2026-09-03): extracted deterministically from
-        # the tool's own structured result, not left to the LLM's final-turn
-        # text to restate correctly - see libs/rzp_agent_kit/two_hop.py.
-        artifact = find_delegation_artifact(raw_results)
-        if artifact is not None:
-            await event_queue.enqueue_event(new_data_artifact_update_event(
-                task_id=context.task_id, context_id=context.context_id,
-                name="two_hop_delegation", data=artifact,
-            ))
+            response = await llm_with_tools.ainvoke(messages)
+            messages.append(response)
 
-        final = await llm_with_tools.ainvoke([*messages, response, *tool_messages])
         if artifact is not None:
             # Verified (2026-09-03): once a TaskArtifactUpdateEvent has been
             # enqueued, the SDK requires the response to complete via a Task
@@ -128,10 +140,10 @@ class CheckoutSalvageAgentExecutor(AgentExecutor):
             # task mode" is a real InvalidAgentResponseError, not a guess.
             await event_queue.enqueue_event(new_text_status_update_event(
                 task_id=context.task_id, context_id=context.context_id,
-                state=TaskState.TASK_STATE_COMPLETED, text=final.content,
+                state=TaskState.TASK_STATE_COMPLETED, text=response.content,
             ))
         else:
-            await event_queue.enqueue_event(new_text_message(final.content))
+            await event_queue.enqueue_event(new_text_message(response.content))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # This agent's tool calls are all fast/synchronous (deterministic Mongo/

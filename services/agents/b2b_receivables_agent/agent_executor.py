@@ -27,12 +27,20 @@ from langchain_openai import ChatOpenAI
 
 from rzp_agent_kit.two_hop import find_delegation_artifact
 
+MAX_TOOL_ROUNDS = 6  # safety cap against a runaway tool-calling loop
+
 SERVERS = {
     "prob9_recon": {
         "transport": "stdio",
         "command": "uv",
         "args": ["run", "fastmcp", "run",
                  str(_CODES_ROOT / "services" / "mcp-servers" / "prob9_recon" / "server.py")],
+    },
+    "prob0_policy_rag": {
+        "transport": "stdio",
+        "command": "uv",
+        "args": ["run", "fastmcp", "run",
+                 str(_CODES_ROOT / "services" / "mcp-servers" / "prob0_policy_rag" / "server.py")],
     },
 }
 
@@ -49,7 +57,17 @@ SYSTEM_PROMPT = (
     "about the right action within what's actually permitted right now. "
     "If a customer's reply mentions a GSTIN or invoice discrepancy, call "
     "check_gstin or pause_for_dispute instead - the agent must know when "
-    "NOT to chase money."
+    "NOT to chase money.\n\n"
+    "If a business customer's reply is an open-ended question you can't "
+    "answer from the invoice context alone (e.g. asking about TDS handling, "
+    "dispute process, or payment terms), follow this exact sequence: (1) call "
+    "retrieve_policy_context with the question, (2) compose your reply "
+    "strictly from the returned chunks if status is 'match', or a generic "
+    "'let me check and get back to you' if 'no_match' - never invent a "
+    "policy detail, (3) call log_faq_interaction with your decision, "
+    "(4) call build_faq_reply_delegation with your composed reply text - you "
+    "do NOT own the WhatsApp send yourself, this hands it to the "
+    "Conversational NLP Agent via the Orchestrator's two-hop delegation."
 )
 
 
@@ -70,35 +88,48 @@ class B2bReceivablesAgentExecutor(AgentExecutor):
         named_tools = {t.name: t for t in tools}
         llm_with_tools = self._get_llm().bind_tools(tools)
 
+        # Multi-round loop (gap fix, 2026-09-03): this agent's own system
+        # prompt has always required gather_decision_context THEN
+        # execute_action as two sequential tool calls, and the FAQ flow now
+        # adds a third/fourth step - but the old single-round loop only ever
+        # executed the FIRST round's tool calls, then treated the next LLM
+        # turn as pure text even if it contained more tool_calls (silently
+        # dropped). execute_action itself may never have actually run under
+        # that loop. This loop is a strict superset of the old behavior.
         messages = [("system", SYSTEM_PROMPT), ("human", user_input)]
         response = await llm_with_tools.ainvoke(messages)
+        messages.append(response)
+        artifact = None
 
-        if not getattr(response, "tool_calls", None):
-            await event_queue.enqueue_event(new_text_message(response.content))
-            return
+        for _ in range(MAX_TOOL_ROUNDS):
+            if not getattr(response, "tool_calls", None):
+                break
+            tool_messages = []
+            raw_results = []
+            for call in response.tool_calls:
+                result = await named_tools[call["name"]].ainvoke(call["args"])
+                raw_results.append(result)
+                tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            messages.extend(tool_messages)
 
-        tool_messages = []
-        raw_results = []
-        for call in response.tool_calls:
-            result = await named_tools[call["name"]].ainvoke(call["args"])
-            raw_results.append(result)
-            tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            found = find_delegation_artifact(raw_results)
+            if found is not None:
+                artifact = found
+                await event_queue.enqueue_event(new_data_artifact_update_event(
+                    task_id=context.task_id, context_id=context.context_id,
+                    name="two_hop_delegation", data=artifact,
+                ))
 
-        artifact = find_delegation_artifact(raw_results)
-        if artifact is not None:
-            await event_queue.enqueue_event(new_data_artifact_update_event(
-                task_id=context.task_id, context_id=context.context_id,
-                name="two_hop_delegation", data=artifact,
-            ))
+            response = await llm_with_tools.ainvoke(messages)
+            messages.append(response)
 
-        final = await llm_with_tools.ainvoke([*messages, response, *tool_messages])
         if artifact is not None:
             await event_queue.enqueue_event(new_text_status_update_event(
                 task_id=context.task_id, context_id=context.context_id,
-                state=TaskState.TASK_STATE_COMPLETED, text=final.content,
+                state=TaskState.TASK_STATE_COMPLETED, text=response.content,
             ))
         else:
-            await event_queue.enqueue_event(new_text_message(final.content))
+            await event_queue.enqueue_event(new_text_message(response.content))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         await event_queue.enqueue_event(new_text_message("Nothing in-flight to cancel."))

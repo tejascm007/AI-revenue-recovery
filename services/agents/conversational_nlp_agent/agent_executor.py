@@ -26,6 +26,8 @@ from langchain_openai import ChatOpenAI
 
 from rzp_agent_kit.two_hop import find_delegation_artifact
 
+MAX_TOOL_ROUNDS = 6  # safety cap against a runaway tool-calling loop
+
 SERVERS = {
     "prob7_nlp_extract": {
         "transport": "stdio",
@@ -38,6 +40,12 @@ SERVERS = {
         "command": "uv",
         "args": ["run", "fastmcp", "run",
                  str(_CODES_ROOT / "services" / "mcp-servers" / "prob8_meta_wa_api" / "server.py")],
+    },
+    "prob0_policy_rag": {
+        "transport": "stdio",
+        "command": "uv",
+        "args": ["run", "fastmcp", "run",
+                 str(_CODES_ROOT / "services" / "mcp-servers" / "prob0_policy_rag" / "server.py")],
     },
 }
 
@@ -56,7 +64,19 @@ SYSTEM_PROMPT = (
     "answer within an open conversation window. HOSTILE sentiment always "
     "gets escalate_for_review called too, regardless of what else you do. "
     "Never invent a policy detail, discount, or date the customer didn't "
-    "actually provide."
+    "actually provide.\n\n"
+    "For an open-ended question you cannot answer from what's already in "
+    "this conversation (e.g. 'EMI option milega kya?', 'what happens if I "
+    "don't pay?'), you MUST follow this exact sequence: (1) call "
+    "retrieve_policy_context with the customer's question, (2) if it "
+    "returns status 'match', compose your reply strictly from the returned "
+    "chunks - never add a policy detail the chunks don't contain; if it "
+    "returns 'no_match', your reply must be a generic 'let me check and get "
+    "back to you' rather than a guess, (3) call log_faq_interaction with "
+    "your decision (ANSWER_FROM_RETRIEVED_CONTEXT or ESCALATED_LOW_CONFIDENCE) "
+    "before sending anything, (4) then actually send the reply via "
+    "send_freeform_reply or send_whatsapp_message. Never skip step 3 - every "
+    "FAQ interaction must be audited whether you answered or escalated."
 )
 
 
@@ -77,40 +97,52 @@ class ConversationalNlpAgentExecutor(AgentExecutor):
         named_tools = {t.name: t for t in tools}
         llm_with_tools = self._get_llm().bind_tools(tools)
 
+        # Multi-round loop (gap fix, 2026-09-03): the FAQ flow genuinely needs
+        # several sequential, dependent tool calls - retrieve_policy_context,
+        # then log_faq_interaction with the decision that retrieval enabled,
+        # then the actual send - which a single fixed round of tool-calling
+        # can't express. This loop is a strict superset of the old one-round
+        # behavior: every other problem's LLM naturally stops issuing tool
+        # calls after one round anyway, so nothing about their behavior changes.
         messages = [("system", SYSTEM_PROMPT), ("human", user_input)]
         response = await llm_with_tools.ainvoke(messages)
+        messages.append(response)
+        artifact = None
 
-        if not getattr(response, "tool_calls", None):
-            await event_queue.enqueue_event(new_text_message(response.content))
-            return
+        for _ in range(MAX_TOOL_ROUNDS):
+            if not getattr(response, "tool_calls", None):
+                break
+            tool_messages = []
+            raw_results = []
+            for call in response.tool_calls:
+                result = await named_tools[call["name"]].ainvoke(call["args"])
+                raw_results.append(result)
+                tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            messages.extend(tool_messages)
 
-        tool_messages = []
-        raw_results = []
-        for call in response.tool_calls:
-            result = await named_tools[call["name"]].ainvoke(call["args"])
-            raw_results.append(result)
-            tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            # No producer tool of Srv7/Srv8 emits this today (this agent
+            # already owns the WhatsApp send, nothing to delegate outbound) -
+            # kept for structural symmetry with the other 3 executors and as
+            # the landing spot for a future reverse hop (e.g. an inbound
+            # dispute intent delegated to the B2B Receivables Agent).
+            found = find_delegation_artifact(raw_results)
+            if found is not None:
+                artifact = found
+                await event_queue.enqueue_event(new_data_artifact_update_event(
+                    task_id=context.task_id, context_id=context.context_id,
+                    name="two_hop_delegation", data=artifact,
+                ))
 
-        # No producer tool of Srv7/Srv8 emits this today (this agent already
-        # owns the WhatsApp send, nothing to delegate outbound) — kept for
-        # structural symmetry with the other 3 executors and as the landing
-        # spot for a future reverse hop (e.g. an inbound dispute intent
-        # delegated to the B2B Receivables Agent), not a currently-exercised path.
-        artifact = find_delegation_artifact(raw_results)
-        if artifact is not None:
-            await event_queue.enqueue_event(new_data_artifact_update_event(
-                task_id=context.task_id, context_id=context.context_id,
-                name="two_hop_delegation", data=artifact,
-            ))
+            response = await llm_with_tools.ainvoke(messages)
+            messages.append(response)
 
-        final = await llm_with_tools.ainvoke([*messages, response, *tool_messages])
         if artifact is not None:
             await event_queue.enqueue_event(new_text_status_update_event(
                 task_id=context.task_id, context_id=context.context_id,
-                state=TaskState.TASK_STATE_COMPLETED, text=final.content,
+                state=TaskState.TASK_STATE_COMPLETED, text=response.content,
             ))
         else:
-            await event_queue.enqueue_event(new_text_message(final.content))
+            await event_queue.enqueue_event(new_text_message(response.content))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         await event_queue.enqueue_event(new_text_message("Nothing in-flight to cancel."))

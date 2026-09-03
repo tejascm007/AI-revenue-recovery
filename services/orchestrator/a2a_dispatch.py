@@ -48,8 +48,22 @@ def build_instruction(event_type: str, problem_id: int, payload: dict) -> str:
 def build_delegation_instruction(artifact: dict) -> str:
     """Builds the second-hop instruction for the Conversational NLP Agent —
     states the exact arguments rather than re-describing the situation, so
-    the receiving agent's LLM only needs to pass them through to
-    send_whatsapp_message, not re-derive them."""
+    the receiving agent's LLM only needs to pass them through to the right
+    tool, not re-derive them. Two artifact shapes exist (gap fix, 2026-09-03):
+    "send_whatsapp" (template-based, from prob3/5/6/9's deterministic tools)
+    and "send_whatsapp_freeform" (an LLM-composed FAQ reply, from
+    prob0_policy_rag.build_faq_reply_delegation - a free-form send since it
+    answers within an already-open Customer Service Window, not a
+    business-initiated template send)."""
+    action = artifact.get("action")
+    if action == "send_whatsapp_freeform":
+        return (
+            "Another agent has already composed a reply to an open customer "
+            "conversation and prepared its exact arguments. Call "
+            "send_freeform_reply with EXACTLY these arguments, unmodified: "
+            f"customer_id={artifact.get('customer_id')!r}, phone={artifact.get('phone')!r}, "
+            f"text={artifact.get('text')!r}."
+        )
     return (
         "Another agent has already decided a WhatsApp message must be sent "
         "and prepared its exact arguments. Call send_whatsapp_message with "

@@ -26,6 +26,8 @@ from langchain_openai import ChatOpenAI
 
 from rzp_agent_kit.two_hop import find_delegation_artifact
 
+MAX_TOOL_ROUNDS = 6  # safety cap against a runaway tool-calling loop
+
 SERVERS = {
     "prob5_hard_decline_salvage": {
         "transport": "stdio",
@@ -77,35 +79,43 @@ class RecurringRevenueAgentExecutor(AgentExecutor):
         named_tools = {t.name: t for t in tools}
         llm_with_tools = self._get_llm().bind_tools(tools)
 
+        # Multi-round loop (gap fix, 2026-09-03) - see checkout_salvage_agent's
+        # identical fix for the full rationale: a strict superset of the old
+        # single-round behavior.
         messages = [("system", SYSTEM_PROMPT), ("human", user_input)]
         response = await llm_with_tools.ainvoke(messages)
+        messages.append(response)
+        artifact = None
 
-        if not getattr(response, "tool_calls", None):
-            await event_queue.enqueue_event(new_text_message(response.content))
-            return
+        for _ in range(MAX_TOOL_ROUNDS):
+            if not getattr(response, "tool_calls", None):
+                break
+            tool_messages = []
+            raw_results = []
+            for call in response.tool_calls:
+                result = await named_tools[call["name"]].ainvoke(call["args"])
+                raw_results.append(result)
+                tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            messages.extend(tool_messages)
 
-        tool_messages = []
-        raw_results = []
-        for call in response.tool_calls:
-            result = await named_tools[call["name"]].ainvoke(call["args"])
-            raw_results.append(result)
-            tool_messages.append(ToolMessage(tool_call_id=call["id"], content=str(result)))
+            found = find_delegation_artifact(raw_results)
+            if found is not None:
+                artifact = found
+                await event_queue.enqueue_event(new_data_artifact_update_event(
+                    task_id=context.task_id, context_id=context.context_id,
+                    name="two_hop_delegation", data=artifact,
+                ))
 
-        artifact = find_delegation_artifact(raw_results)
-        if artifact is not None:
-            await event_queue.enqueue_event(new_data_artifact_update_event(
-                task_id=context.task_id, context_id=context.context_id,
-                name="two_hop_delegation", data=artifact,
-            ))
+            response = await llm_with_tools.ainvoke(messages)
+            messages.append(response)
 
-        final = await llm_with_tools.ainvoke([*messages, response, *tool_messages])
         if artifact is not None:
             await event_queue.enqueue_event(new_text_status_update_event(
                 task_id=context.task_id, context_id=context.context_id,
-                state=TaskState.TASK_STATE_COMPLETED, text=final.content,
+                state=TaskState.TASK_STATE_COMPLETED, text=response.content,
             ))
         else:
-            await event_queue.enqueue_event(new_text_message(final.content))
+            await event_queue.enqueue_event(new_text_message(response.content))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         await event_queue.enqueue_event(new_text_message("Nothing in-flight to cancel."))

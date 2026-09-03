@@ -64,11 +64,12 @@ async def handle_event(event: dict) -> None:
         return
 
     for artifact in result["delegation_artifacts"]:
-        if artifact.get("action") != "send_whatsapp":
-            print(f"[warn] unrecognized delegation artifact action: {artifact.get('action')!r}")
+        action = artifact.get("action")
+        if action not in ("send_whatsapp", "send_whatsapp_freeform"):
+            print(f"[warn] unrecognized delegation artifact action: {action!r}")
             continue
         delegation_instruction = build_delegation_instruction(artifact)
-        print(f"[two-hop] {AGENT_NAMES[agent_url]} -> Conversational NLP Agent: send_whatsapp")
+        print(f"[two-hop] {AGENT_NAMES[agent_url]} -> Conversational NLP Agent: {action}")
         try:
             second_result = await dispatch(CONVERSATIONAL_NLP_AGENT_URL, delegation_instruction)
             print(f"[two-hop result] Conversational NLP Agent: {second_result['text'][:300]}")

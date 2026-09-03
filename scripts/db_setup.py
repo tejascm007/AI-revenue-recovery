@@ -389,28 +389,13 @@ def main():
             backfilled.append(field)
     print(f"  seeded/backfilled config fields: {backfilled or '(none needed, already up to date)'}")
 
-    print("\n[Permanent] faq_documents  (RAG corpus, Problem 8/9 open-ended Q&A ONLY — fixed "
-          "regulatory citations live in merchant_config, not here, per the 2026-09-03 scope correction)")
-    faq_documents = ensure_collection(db, "faq_documents", {
-        "bsonType": "object",
-        "required": ["source", "doc_type", "chunk_text", "effective_date"],
-        "properties": {
-            "source": {"bsonType": "string"},
-            "doc_type": {"bsonType": "string"},
-            "effective_date": {"bsonType": "date"},
-            "superseded_by": {"bsonType": ["string", "null"]},
-            "chunk_text": {"bsonType": "string"},
-            "chunk_index": {"bsonType": ["int", "null"]},
-            "embedding": {"bsonType": ["array", "null"]},
-        },
-    })
-    faq_documents.create_index([("effective_date", DESCENDING)], name="idx_effective_date")
-    faq_documents.create_index([("superseded_by", ASCENDING)], name="idx_superseded_by")
-    print("  NOTE: Atlas Search + Atlas Vector Search indexes (needed for the hybrid $rankFusion")
-    print("  retrieval this collection is designed around) are NOT created here — they are an")
-    print("  Atlas-only / mongot-backed feature not available on a plain local mongod community")
-    print("  instance. This collection and its scalar indexes exist; the search indexes need either")
-    print("  a real MongoDB Atlas cluster or 'atlas deployments setup' for local Atlas-equivalent search.")
+    print("\n[Moved, 2026-09-03] faq_documents now lives on a SEPARATE MongoDB deployment, not here.")
+    print("  Real Atlas Search + Atlas Vector Search indexes (needed for the hybrid $rankFusion")
+    print("  retrieval prob0_policy_rag is built on) are an Atlas-only / mongot-backed feature this")
+    print("  plain community mongod cannot provide. Resolved by running the real")
+    print("  'mongodb/mongodb-atlas-local' Docker image (a genuine local Atlas-equivalent deployment,")
+    print("  GA and officially supported for exactly this case) as its own server on port 27018 -")
+    print("  see libs/rzp_common/rag_mongo_client.py and scripts/rag_db_setup.py.")
 
     # ---------------------------------------------------------------
     # Ephemeral / TTL collections
