@@ -13,6 +13,8 @@ import os
 import smtplib
 from email.message import EmailMessage
 
+import rzp_common.env  # noqa: F401  (side-effect import: loads codes/.env)
+
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")

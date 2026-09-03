@@ -14,6 +14,8 @@ import os
 
 import httpx
 
+import rzp_common.env  # noqa: F401  (side-effect import: loads codes/.env)
+
 META_WA_ACCESS_TOKEN = os.environ.get("META_WA_ACCESS_TOKEN", "")
 META_WA_PHONE_NUMBER_ID = os.environ.get("META_WA_PHONE_NUMBER_ID", "")
 META_WA_APP_SECRET = os.environ.get("META_WA_APP_SECRET", "")

@@ -12,6 +12,8 @@ from functools import lru_cache
 from pymongo import MongoClient
 from pymongo.database import Database
 
+import rzp_common.env  # noqa: F401  (side-effect import: loads codes/.env)
+
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
 DB_NAME = os.environ.get("MONGO_DB_NAME", "revenue_recovery")
 

@@ -27,6 +27,8 @@ import os
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+import rzp_common.env  # noqa: F401  (side-effect import: loads codes/.env)
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-5.6")

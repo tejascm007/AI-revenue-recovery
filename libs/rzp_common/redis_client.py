@@ -11,6 +11,8 @@ from functools import lru_cache
 
 import redis
 
+import rzp_common.env  # noqa: F401  (side-effect import: loads codes/.env)
+
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
