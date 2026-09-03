@@ -159,6 +159,13 @@ def main():
             "razorpay_subscription_id": {"bsonType": "string"},
             "customer_id": {"bsonType": "string"},
             "plan_id": {"bsonType": ["string", "null"]},
+            # Gap fix (2026-09-03): nothing populated this document at all until
+            # the backend's webhook handler was built - and nothing ever stored
+            # the recurring amount, which classify_decline's AFA-threshold
+            # heuristic and generate_hard_decline_link both require. Populated
+            # from subscription.activated/subscription.charged's paired payment
+            # entity (the amount actually charged that cycle).
+            "amount": {"bsonType": ["int", "long", "double", "null"]},
             "status": {"bsonType": "string"},
             "auth_attempts": {"bsonType": ["int", "null"]},
             "current_cycle_start": {"bsonType": ["date", "null"]},

@@ -1,0 +1,45 @@
+"""FastAPI backend - Design_Spec_and_Decisions.md, section 3's master
+architecture diagram: "Razorpay Webhooks/Sync -> FastAPI Backend -> raw JSON
+dump -> MongoDB -> Kafka Event -> Main Orchestrator". Also owns Problem 1's
+vault API and the checkout S2S API (order creation), per section 4's tech
+stack table.
+
+Run:
+    uv run python services/backend/main.py
+"""
+
+import sys
+from pathlib import Path
+
+_CODES_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling imports: event_derivation, vault_store, etc.
+sys.path.insert(0, str(_CODES_ROOT / "libs"))
+# Cross-service imports (intentional - see telemetry.py/watchdog.py's own
+# docstrings, both written expecting "the shared webhook handler, services/backend"
+# to import them directly rather than duplicating their Redis-state logic).
+sys.path.insert(0, str(_CODES_ROOT / "services" / "mcp-servers" / "prob2_route"))
+sys.path.insert(0, str(_CODES_ROOT / "services" / "mcp-servers" / "prob3_otp_watch"))
+
+from fastapi import FastAPI  # noqa: E402
+
+from api.checkout import router as checkout_router  # noqa: E402
+from api.vault import router as vault_router  # noqa: E402
+from api.webhooks import router as webhooks_router  # noqa: E402
+
+PORT = 8000
+
+app = FastAPI(title="AI Revenue Recovery Engine - Backend")
+app.include_router(webhooks_router)
+app.include_router(vault_router)
+app.include_router(checkout_router)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

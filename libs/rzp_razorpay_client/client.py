@@ -86,6 +86,46 @@ def with_backoff(func: Callable) -> Callable:
 
 
 @with_backoff
+def identify_customer(name: str, email: str | None, contact: str) -> dict:
+    """POST /v1/customers with fail_existing:"0" — Problem 1's fetch-or-create
+    identity call (Design_Spec_and_Decisions.md, section 11, Problem 1's
+    /api/customers/identify). fail_existing:"0" makes this idempotent:
+    Razorpay returns the existing customer instead of erroring when one
+    already matches on contact/email, rather than us having to fetch-then-
+    create ourselves."""
+    payload: dict[str, Any] = {"name": name, "contact": contact, "fail_existing": "0"}
+    if email:
+        payload["email"] = email
+    return get_client().customer.create(data=payload)
+
+
+@with_backoff
+def delete_token(customer_id: str, token_id: str) -> dict:
+    """POST /tokens/delete — MUST be called and succeed before a token is ever
+    removed from our own vault_tokens[] (Problem 1's Flow D), so a deletion
+    never orphans a still-live token on Razorpay's side. Verified against the
+    installed SDK's actual signature: token.delete(customer_id, token_id),
+    not token_id nested in a data dict as a first guess assumed."""
+    return get_client().token.delete(customer_id, token_id)
+
+
+@with_backoff
+def create_order(amount: int, currency: str, receipt: str, notes: dict | None = None) -> dict:
+    """POST /v1/orders — our own checkout S2S endpoint's order-creation call.
+    Real-world grounding correction (2026-09-03): the original Problem 3
+    mechanism description ("watchdog on order.created") reads as if
+    order.created were a webhook event to subscribe to; verified directly
+    against Razorpay's own webhook docs that no such event exists — only
+    order.paid does. schedule_watchdog is therefore called synchronously
+    right here, in our own order-creation code path, not from a webhook
+    listener, matching what watchdog.py's own docstring already said."""
+    payload: dict[str, Any] = {"amount": amount, "currency": currency, "receipt": receipt}
+    if notes:
+        payload["notes"] = notes
+    return get_client().order.create(data=payload)
+
+
+@with_backoff
 def fetch_order_payments(order_id: str) -> dict:
     """GET /v1/orders/{id}/payments — the ground-truth reconciliation call used
     by Problem 3's watchdog (and Problem 7's PTP-due check) to verify whether an
