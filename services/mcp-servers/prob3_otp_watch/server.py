@@ -29,7 +29,14 @@ from watchdog import claim_ghost_debit, schedule_stage2  # noqa: E402
 
 mcp = FastMCP("Prob3OtpWatch")
 
-RECOVERY_LINK_EXPIRY_SECONDS = 900  # 15 minutes, per the design
+# Real bug found by an actual Razorpay test-mode call (2026-09-03): Razorpay
+# rejects payment_link.create with expire_by exactly 15 minutes out
+# ("timestamp must be atleast 15 minutes in future") - it requires strictly
+# MORE than 15 minutes, not >=, and by the time a request reaches Razorpay's
+# server a small amount of wall-clock time has already elapsed since this
+# constant was read. 960s (16 min) confirmed working live; kept as close to
+# the design's intended 15-minute window as a real safety margin allows.
+RECOVERY_LINK_EXPIRY_SECONDS = 960
 
 
 @mcp.tool()
