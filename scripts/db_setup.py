@@ -14,8 +14,15 @@ Usage:
     python scripts/db_setup.py
 """
 
+import sys
+
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import CollectionInvalid
+
+# Windows consoles default to cp1252, which can't encode the ₹ sign used in a
+# couple of print statements below — force UTF-8 so this runs the same on any OS.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 MONGO_URI = "mongodb://localhost:27017/"
 DB_NAME = "revenue_recovery"
@@ -268,7 +275,7 @@ def main():
 
     print("\n[Permanent] merchant_config  (consolidated config: AFA threshold, dunning spacing, "
           "PTP grace period, B2B escalation schedule, MSME/TDS settings)")
-    ensure_collection(db, "merchant_config", {
+    merchant_config = ensure_collection(db, "merchant_config", {
         "bsonType": "object",
         "required": ["_id"],
         "properties": {
@@ -283,7 +290,39 @@ def main():
             "faq_min_confidence": {"bsonType": ["double", "null"]},
         },
     })
-    # single-document collection; default _id index is sufficient, no extra indexes needed
+    # single-document collection; default _id index is sufficient, no extra indexes needed.
+    # Seed the one config document with the decided defaults from the design doc, but only
+    # on first creation ($setOnInsert) — re-running this script must never clobber a merchant's
+    # own edits to these settings.
+    merchant_config.update_one(
+        {"_id": "merchant_config"},
+        {"$setOnInsert": {
+            # Problem 5: RBI AFA threshold override for insurance/mutual-fund/credit-card-bill
+            # categories (standard AFA threshold itself is the regulatory ₹15,000, not stored
+            # here since it's not merchant-configurable; this field is only the ₹1,00,000
+            # category exemption).
+            "afa_override_threshold": 100000,
+            # Problem 7: decided default (2026-09-03), still merchant-configurable.
+            "ptp_grace_period_hours": 24,
+            # Problem 6: Touch1@halted+0, Touch2@+4d, Touch3@+9d, downgrade-check@+11d.
+            "dunning_touch_spacing_days": [0, 4, 9, 11],
+            # Problem 9: T-3/T+1/T+7/T+14/T+30/T+45/T+60, research-backed cadence.
+            "b2b_escalation_schedule_days": [-3, 1, 7, 14, 30, 45, 60],
+            # Problem 9: Section 43B(h) citation at T+45 only fires if this is explicitly
+            # true — never assumed. Defaults false; the merchant must confirm MSME status.
+            "msme_registered": False,
+            # Problem 9: no universal default exists (TDS % is transaction-type-specific,
+            # a legal fact not a system tunable) — 0 until the merchant configures the
+            # actual expected rate for their invoice categories.
+            "tds_expected_percent": 0,
+            "escalation_contacts": {"procurement": "email", "finance": "email"},
+            # Problem 8: seed value from the doc's own worked audit example; needs empirical
+            # tuning against the real FAQ corpus once one exists.
+            "faq_min_confidence": 0.65,
+        }},
+        upsert=True,
+    )
+    print("  seeded default config document (only fields not already present)")
 
     print("\n[Permanent] faq_documents  (RAG corpus, Problem 8/9 open-ended Q&A ONLY — fixed "
           "regulatory citations live in merchant_config, not here, per the 2026-09-03 scope correction)")
