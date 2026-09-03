@@ -6,13 +6,13 @@ mid-sentence). Each source document below is one coherent policy topic;
 RecursiveCharacterTextSplitter respects paragraph boundaries before falling
 back to sentence/word splits, which is the "structure-aware" part.
 
-Credential boundary (same pattern as every other OpenAI-touching piece in
-this project): OPENAI_API_KEY is not set anywhere in this environment, so
-running this script fails at OpenAIEmbeddings' own construction, not from a
-bug here - this script is written correctly and ready to run the moment
-real credentials exist. The retrieval mechanism itself ($rankFusion, hybrid
-search, score thresholding) is verified separately, in the MCP server's own
-test, using synthetic embedding vectors that don't need this credential.
+Credential boundary (same pattern as every other credentialed client in
+this project): requires OPENROUTER_API_KEY (routed through OpenRouter, see
+libs/rzp_agent_kit/llm.py) - if it's not set, this fails at get_embeddings()'s
+own construction, not from a bug here. The retrieval mechanism itself
+($rankFusion, hybrid search, score thresholding) is verified separately, in
+the MCP server's own test, using synthetic embedding vectors that don't
+need this credential.
 
 Run:
     uv run python scripts/ingest_faq_documents.py
@@ -27,12 +27,11 @@ sys.stdout.reconfigure(encoding="utf-8")
 _CODES_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
-from langchain_openai import OpenAIEmbeddings  # noqa: E402
 from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
 
+from rzp_agent_kit.llm import get_embeddings  # noqa: E402
 from rzp_common.rag_mongo_client import get_rag_db  # noqa: E402
 
-EMBEDDING_MODEL = "text-embedding-3-small"
 CHUNK_SIZE_CHARS = 3000  # ~750 tokens at ~4 chars/token, close to the design's ~1,000-token target
 CHUNK_OVERLAP_CHARS = 750  # 25%
 
@@ -130,7 +129,7 @@ DOCUMENTS = [
 def ingest() -> int:
     db = get_rag_db()
     faq_documents = db["faq_documents"]
-    embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
+    embeddings = get_embeddings()
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE_CHARS, chunk_overlap=CHUNK_OVERLAP_CHARS,
         separators=["\n\n", "\n", ". ", " ", ""],

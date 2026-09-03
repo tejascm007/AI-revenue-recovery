@@ -24,6 +24,7 @@ from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 
+from rzp_agent_kit.llm import get_chat_llm
 from rzp_agent_kit.two_hop import find_delegation_artifact
 
 MAX_TOOL_ROUNDS = 6  # safety cap against a runaway tool-calling loop
@@ -66,10 +67,9 @@ class RecurringRevenueAgentExecutor(AgentExecutor):
         # Lazy for the same reason as every other agent in this project:
         # ChatOpenAI validates its API key eagerly at construction, which
         # would otherwise make the whole A2A app fail to start without
-        # OPENAI_API_KEY set. Pin to whatever OpenAI model is current at
-        # build time - "gpt-5.6" was current as of this design session.
+        # OPENROUTER_API_KEY set. Routed through OpenRouter, decided 2026-09-03.
         if self._llm is None:
-            self._llm = ChatOpenAI(model="gpt-5.6")
+            self._llm = get_chat_llm()
         return self._llm
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:

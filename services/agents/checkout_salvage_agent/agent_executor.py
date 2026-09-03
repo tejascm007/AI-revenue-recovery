@@ -34,6 +34,7 @@ from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 
+from rzp_agent_kit.llm import get_chat_llm
 from rzp_agent_kit.two_hop import find_delegation_artifact
 
 MAX_TOOL_ROUNDS = 6  # safety cap against a runaway tool-calling loop
@@ -81,14 +82,11 @@ class CheckoutSalvageAgentExecutor(AgentExecutor):
         # other external client in this project (Mongo/Redis/Razorpay/Meta,
         # all lazy via lru_cache), ChatOpenAI validates its API key eagerly at
         # construction — building it in __init__ would make the whole A2A app
-        # fail to even start without OPENAI_API_KEY set, rather than failing
-        # only when an actual request needs the LLM, breaking the "clean
-        # failure at the point of use, not at import/startup" pattern used
-        # everywhere else in this codebase. Pin to whatever OpenAI model is
-        # current at build time — "gpt-5.6" was current as of this design
-        # session and will be stale by the time anyone reads this comment.
+        # fail to even start without OPENROUTER_API_KEY set, rather than
+        # failing only when an actual request needs the LLM. Routed through
+        # OpenRouter (libs/rzp_agent_kit/llm.py), decided 2026-09-03.
         if self._llm is None:
-            self._llm = ChatOpenAI(model="gpt-5.6")
+            self._llm = get_chat_llm()
         return self._llm
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:

@@ -24,6 +24,7 @@ from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 
+from rzp_agent_kit.llm import get_chat_llm
 from rzp_agent_kit.two_hop import find_delegation_artifact
 
 MAX_TOOL_ROUNDS = 6  # safety cap against a runaway tool-calling loop
@@ -87,7 +88,7 @@ class ConversationalNlpAgentExecutor(AgentExecutor):
 
     def _get_llm(self) -> ChatOpenAI:
         if self._llm is None:
-            self._llm = ChatOpenAI(model="gpt-5.6")
+            self._llm = get_chat_llm()
         return self._llm
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:

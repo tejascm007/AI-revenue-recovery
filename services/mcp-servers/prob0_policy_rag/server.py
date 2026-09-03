@@ -27,9 +27,9 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 from fastmcp import FastMCP  # noqa: E402
 from langchain_mongodb.retrievers.hybrid_search import MongoDBAtlasHybridSearchRetriever  # noqa: E402
 from langchain_mongodb.vectorstores import MongoDBAtlasVectorSearch  # noqa: E402
-from langchain_openai import OpenAIEmbeddings  # noqa: E402
 
 from rzp_agent_kit.audit import write_audit_log  # noqa: E402
+from rzp_agent_kit.llm import get_embeddings  # noqa: E402
 from rzp_common.mongo_client import get_db  # noqa: E402
 from rzp_common.rag_mongo_client import get_rag_db  # noqa: E402
 
@@ -55,11 +55,12 @@ def _get_retriever() -> MongoDBAtlasHybridSearchRetriever:
     # Lazy and cached, same reason as every other OpenAI-touching client in
     # this project: OpenAIEmbeddings validates its API key eagerly at
     # construction, which would otherwise make this whole server fail to
-    # start without OPENAI_API_KEY set, rather than failing only when a
-    # retrieval actually happens.
+    # start without OPENROUTER_API_KEY set, rather than failing only when a
+    # retrieval actually happens. Routed through OpenRouter (rzp_agent_kit.llm),
+    # decided 2026-09-03.
     global _retriever
     if _retriever is None:
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        embeddings = get_embeddings()
         vectorstore = MongoDBAtlasVectorSearch(
             collection=get_rag_db()["faq_documents"], embedding=embeddings,
             index_name=VECTOR_INDEX_NAME, text_key="chunk_text", embedding_key="embedding",
