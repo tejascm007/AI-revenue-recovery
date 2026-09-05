@@ -46,16 +46,47 @@ def build_instruction(event_type: str, problem_id: int, payload: dict) -> str:
 
 
 def build_delegation_instruction(artifact: dict) -> str:
-    """Builds the second-hop instruction for the Conversational NLP Agent —
-    states the exact arguments rather than re-describing the situation, so
-    the receiving agent's LLM only needs to pass them through to the right
-    tool, not re-derive them. Two artifact shapes exist (gap fix, 2026-09-03):
-    "send_whatsapp" (template-based, from prob3/5/6/9's deterministic tools)
-    and "send_whatsapp_freeform" (an LLM-composed FAQ reply, from
-    prob0_policy_rag.build_faq_reply_delegation - a free-form send since it
-    answers within an already-open Customer Service Window, not a
-    business-initiated template send)."""
+    """Builds the next-hop instruction for whichever agent a delegation
+    artifact targets — states the exact arguments (or the exact lookup-then-
+    act sequence) rather than re-describing the situation, so the receiving
+    agent's LLM only needs to follow it, not re-derive intent from scratch.
+    Four artifact shapes exist: "send_whatsapp" (template-based, from
+    prob3/5/6/9's deterministic tools) and "send_whatsapp_freeform" (an
+    LLM-composed FAQ reply, from prob0_policy_rag.build_faq_reply_delegation
+    - free-form since it answers within an already-open Customer Service
+    Window, not a business-initiated template send) both target the
+    Conversational NLP Agent (gap fix, 2026-09-03); "flag_b2b_dispute" and
+    "request_payment_link_resend" (gap fix, 2026-09-05) run the *reverse*
+    direction - the Conversational NLP Agent delegating OUT to whichever
+    agent owns the data (invoice or checkout state) it doesn't have."""
     action = artifact.get("action")
+    if action == "request_payment_link_resend":
+        return (
+            "Another agent detected a customer asking to resend their payment "
+            f"link and is delegating it to you, since you own checkout state. "
+            f"customer_id={artifact.get('customer_id')!r}, phone={artifact.get('phone')!r}. "
+            f"The customer's raw message: {artifact.get('raw_message')!r}. First "
+            "call find_active_checkout_session_for_customer to resolve which "
+            "order this is about. If one is found, call generate_recovery_link "
+            "with the resolved order_id, amount, customer_name, and "
+            "customer_contact to regenerate and send a fresh link. If none is "
+            "found, do not guess an order_id - just note that no active "
+            "checkout exists for this customer."
+        )
+    if action == "flag_b2b_dispute":
+        return (
+            "Another agent detected a possible billing dispute in an inbound "
+            "customer message and is delegating it to you, since you own "
+            f"invoice data. customer_id={artifact.get('customer_id')!r}. "
+            f"The customer's raw message: {artifact.get('raw_message')!r} "
+            f"(extracted reason: {artifact.get('dispute_reason')!r}). First call "
+            "find_open_invoice_for_customer to resolve which invoice this is "
+            "about. If one is found, call pause_for_dispute with the resolved "
+            "invoice_id, an appropriate dispute_type derived from the reason "
+            "given, and a concise description. If none is found, do not guess "
+            "an invoice_id - just note that no open invoice exists for this "
+            "customer."
+        )
     if action == "send_whatsapp_freeform":
         return (
             "Another agent has already composed a reply to an open customer "

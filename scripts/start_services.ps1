@@ -28,17 +28,25 @@ function Start-HttpService($Name, $ScriptPath, $Port) {
 }
 
 function Start-LoopService($Name, $ScriptPath) {
-    $pidFile = Join-Path $PidDir "$Name.pid"
-    if (Test-Path $pidFile) {
-        $existingPid = Get-Content $pidFile
-        if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {
-            Write-Host "$Name`: already running (pid $existingPid)"
-            return
-        }
+    # Checks by command line, not the recorded .pid file (bug found live,
+    # 2026-09-05): the .pid file holds uv's wrapper PID, not the actual
+    # Python interpreter's - if the wrapper alone ever died (e.g. a manual
+    # `Stop-Process` on that PID) while the real child kept running, this
+    # check used to see a dead PID and start a second instance on top of the
+    # still-live orphan. Verified this had actually happened: 4 separate
+    # orchestrator.py and 4 watchdog_poller.py processes were all found
+    # simultaneously alive. Matching by command line finds the real process
+    # regardless of which PID got recorded - mirrors Stop-ByPort's already-
+    # correct approach in stop_services.ps1.
+    $existing = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+        Where-Object { $_.CommandLine -like "*$ScriptPath*" }
+    if ($existing) {
+        Write-Host "$Name`: already running (pid $($existing.ProcessId -join ', '))"
+        return
     }
     $proc = Start-Process -FilePath "uv" -ArgumentList "run", "python", $ScriptPath `
         -WorkingDirectory $CodesRoot -WindowStyle Hidden -PassThru
-    $proc.Id | Out-File $pidFile
+    $proc.Id | Out-File (Join-Path $PidDir "$Name.pid")
     Write-Host "$Name`: starting (pid $($proc.Id))..."
 }
 

@@ -4,27 +4,50 @@ A production-grade, multi-agent system that recovers revenue lost across a Razor
 
 Built for Razorpay's AI Buildathon (Track 03: AI Revenue Recovery), as a real system rather than a hackathon demo: every mechanism below has been verified against live infrastructure and, where credentials exist, live third-party APIs (Razorpay test mode, Meta WhatsApp Cloud API, OpenRouter) — not mocked.
 
-The full design rationale, decision history, and per-problem low-level designs live in `../Design_Spec_and_Decisions.md` (outside this folder) — that document is the source of truth for *why*; this README is about *how to run it*.
+The full design rationale, decision history, and per-problem low-level designs live in `../Design_Spec_and_Decisions.md` (outside this folder) — that document is the source of truth for _why_; this README is about _how to run it_.
 
 ## Architecture
 
 ```
-Razorpay Webhooks/Meta Webhooks → FastAPI Backend → raw JSON dump → MongoDB
-                                          │ (derived lightweight event)
-                                          ▼
-                                      Kafka topic
-                                          │
-                                          ▼
-                        Main Orchestrator Agent ⇄ Redis (locks/state/idempotency)
-                                          │ (A2A protocol routing)
-      ┌──────────────────┬──────────────────┬──────────────────┐
-      ▼                  ▼                  ▼                  ▼
-Checkout Salvage    Recurring Revenue   Conversational NLP   B2B Receivables
-Agent (MCP client)  Agent (MCP client)  Agent (MCP client)   Agent (MCP client)
-      │                  │                  │                  │
-      ▼                  ▼                  ▼                  ▼
-   8 problem-specific FastMCP servers, one per problem, hard tool isolation
-   + 1 cross-cutting Policy RAG server (real MongoDB Atlas Hybrid Search)
+[ Razorpay Ecosystem ] ──(Webhooks/Sync)──► [ FastAPI Backend ] ──(Raw JSON Dump)──► [ MongoDB ]
+                                                    │
+                                               (Kafka Event)
+                                                    │
+                                                    ▼
+                                     [ MAIN ORCHESTRATOR AGENT ] ◄────(State & Locks)────► [ Redis ]
+                                                    │
+                                         (A2A Protocol Routing)
+                                                    │
+        ┌───────────────────────┬───────────────────┼───────────────────┬───────────────────────┐
+        ▼                       ▼                   │                   ▼                       ▼
+[ Checkout Salvage ]  [ Recurring Revenue ]         │         [ Conversational NLP ]  [ B2B Receivables ]
+   (MCP Client)            (MCP Client)             │              (MCP Client)            (MCP Client)
+        │                       │                   │                   │                       │
+        ▼                       ▼                   │                   ▼                       ▼
+ ┌─────────────┐         ┌─────────────┐            │            ┌─────────────┐         ┌─────────────┐
+ │FastMCP Srv A│         │FastMCP Srv B│            │            │FastMCP Srv C│         │FastMCP Srv D│
+ │ - Prob 2    │         │ - Prob 5    │            │            │ - Prob 7    │         │ - Prob 9    │
+ │ - Prob 3    │         │ - Prob 6    │            │            │ - Prob 8    │         │ - Tools:    │
+ │ - Prob 4    │         │ - Tools:    │            │            │ - Tools:    │         │ Recon, Esc, │
+ │ - Tools:    │         │ Sub_Pause,  │            │            │ NLP_Extract,│         │ ERP_Mock    │
+ │ Links, Nudge│         │ Invoice_Gen │            │            │ Meta_WA_API │         │             │
+ └─────────────┘         └─────────────┘            │            └──────┬──────┘         └──────┬──────┘
+                                                    │                   │                       │
+          *Problem 1 (Layer 0 Vault)* ◄─────────────┘                   └───────────┬───────────┘
+      (Handled natively by FastAPI + MongoDB via standard Razorpay TokenHQ APIs. Zero AI overhead.)
+                                                                                     ▼
+                                                                        ┌───────────────────────┐
+                                                                        │  FastMCP Srv 0 (RAG)  │
+                                                                        │  - Policy RAG          │
+                                                                        │  - Tools: Retrieve_    │
+                                                                        │    Policy_Context,     │
+                                                                        │    Log_FAQ_Interaction │
+                                                                        └───────────┬───────────┘
+                                                                                     ▼
+                                                                     [ MongoDB Atlas Hybrid Search ]
+                                                                     (real $vectorSearch + $search/BM25,
+                                                                      via mongodb-atlas-local, separate
+                                                                      from the plain mongod above)
 
 A separate Watchdog Poller drains a shared Redis checkpoint queue and feeds
 scheduled follow-ups (stage-2 checkout checks, dunning touches, PTP
@@ -33,7 +56,7 @@ due-dates, B2B escalations) back through the same Kafka → Orchestrator path.
 
 Problem 1 (RBI-compliant tokenized card vault) sits outside the agent mesh entirely — it's not agentic, just plain FastAPI + MongoDB + Razorpay TokenHQ, since compliant token storage is a memory problem, not a judgment problem.
 
-**Why A2A + MCP, not one flat agent**: A2A (agent-to-agent) solves peer delegation between the 4 domain agents; MCP (model-context-protocol) solves each agent's own access to its specific tools, with hard tool isolation per problem (no agent can call another problem's tools directly). A cross-agent side effect (e.g. the Checkout Salvage Agent needing a WhatsApp message sent, a capability only the Conversational NLP Agent owns) never happens via shared tool access — it's a two-hop delegation through the Orchestrator, the same pattern A2A's own "routing agent" design intends.
+**Why A2A + MCP, not one flat agent**: A2A (agent-to-agent) solves peer delegation between the 4 domain agents; MCP (model-context-protocol) solves each agent's own access to its specific tools, with hard tool isolation per problem (no agent can call another problem's tools directly). A cross-agent side effect never happens via shared tool access — it's a two-hop delegation through the Orchestrator, the same pattern A2A's own "routing agent" design intends. This runs in both directions: forward (e.g. the Checkout Salvage Agent needing a WhatsApp message sent, a capability only the Conversational NLP Agent owns) and reverse (the Conversational NLP Agent recognizing a B2B billing dispute in an inbound WhatsApp message, but not owning invoice data to act on it, so it delegates to the B2B Receivables Agent instead). The Orchestrator resolves each delegation artifact's target agent generically from its own `action` field (`services/orchestrator/agent_registry.py`'s `DELEGATION_TARGET_URLS`), not by assuming every artifact is WhatsApp-bound.
 
 ## Tech stack
 
@@ -137,5 +160,5 @@ Runs in GitHub Actions on every push (`.github/workflows/tests.yml`). Deliberate
 - The merchant's own storefront/checkout page (a prompt for generating one with Lovable exists in this project's conversation history, not yet built)
 - A merchant-facing dashboard (recovery-rate tiles, audit-trail drill-down) — explicitly out of scope for every LLD in this project so far, not just unbuilt
 - Live-infra integration tests in CI (ephemeral Mongo/Redis/Kafka via `docker-compose`, say) — the automated suite that exists covers pure logic only, see `tests/README.md`
-- Reverse two-hop delegation: an inbound WhatsApp message revealing a dispute intent, routed back to the B2B Receivables Agent — no detecting tool exists yet
 - Razorpay Smart Collect (Virtual Accounts) needs enabling on your Razorpay account separately — confirmed via a real API call that it's an account-level gap, not a code issue; Problem 9's reconciliation flow needs it
+- Nothing in this codebase ever creates an `invoices` document (Problem 9's B2B receivables tools all assume one already exists, populated from some out-of-band ERP/accounting sync this project doesn't own) — verified by finding the collection genuinely empty while live-testing the reverse two-hop delegation below; a seed script or real ERP integration is separately-scoped future work

@@ -68,7 +68,11 @@ SYSTEM_PROMPT = (
     "deterministic rules (route-health thresholds, stopping caps) — your job is "
     "to pick the right tool for the situation described, and explain your "
     "reasoning concisely for the audit trail. Never invent a payment amount, "
-    "provider name, or date that wasn't given to you."
+    "provider name, or date that wasn't given to you. If a request is "
+    "delegated to you asking to resend a customer's payment link (it only "
+    "has customer_id - that's your data), call "
+    "find_active_checkout_session_for_customer first to resolve the order "
+    "before calling generate_recovery_link; never guess an order_id."
 )
 
 

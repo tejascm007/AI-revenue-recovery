@@ -443,6 +443,7 @@ def main():
     })
     checkout_sessions.create_index([("created_at", ASCENDING)], expireAfterSeconds=DAY, name="ttl_created_at")
     checkout_sessions.create_index([("stage", ASCENDING)], name="idx_stage")
+    checkout_sessions.create_index([("customer_id", ASCENDING)], name="idx_customer_id")
 
     print("\n[Ephemeral, TTL ~7d] method_health_rollups  (Problem 2 dashboard/history snapshots)")
     method_health_rollups = ensure_collection(db, "method_health_rollups", {

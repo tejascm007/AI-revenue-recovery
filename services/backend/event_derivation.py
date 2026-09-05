@@ -84,6 +84,7 @@ def handle_payment_failed(event: dict, razorpay_event_id: str) -> None:
         "method": method, "amount": payment.get("amount"),
         "error_code": payment.get("error_code"), "error_reason": payment.get("error_reason"),
         "error_source": payment.get("error_source"), "customer_id": payment.get("customer_id"),
+        "instrument_key": instrument_key,
     }, event_id=razorpay_event_id)
 
 
@@ -113,10 +114,24 @@ def handle_subscription_pending(event: dict, razorpay_event_id: str) -> None:
 
 
 def handle_subscription_halted(event: dict, razorpay_event_id: str) -> None:
+    """Gap fix (2026-09-05): the published payload used to carry only
+    subscription_id, but prob6_dunning_sequencer's start_sequence (the tool
+    this event is documented to trigger) requires amount/customer_name/
+    customer_contact to build a real payment link - none of those are on the
+    subscription entity itself, and with nothing else in the payload the LLM
+    had no real values to pass, only ones it could invent. Same DB-lookup
+    pattern as watchdog_poller.handle_hard_decline's _customer_contact."""
     subscription = _entity(event, "subscription")
-    if not subscription.get("id"):
+    sub_id = subscription.get("id")
+    if not sub_id:
         return
-    publish_event("subscription.halted", 6, {"subscription_id": subscription["id"]}, event_id=razorpay_event_id)
+    db = get_db()
+    doc = db.subscriptions.find_one({"razorpay_subscription_id": sub_id}) or {}
+    customer = db.customers.find_one({"razorpay_customer_id": doc.get("customer_id")}) or {}
+    publish_event("subscription.halted", 6, {
+        "subscription_id": sub_id, "amount": doc.get("amount", 0),
+        "customer_name": customer.get("name"), "customer_contact": customer.get("phone"),
+    }, event_id=razorpay_event_id)
 
 
 def handle_subscription_charged(event: dict, razorpay_event_id: str) -> None:

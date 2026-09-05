@@ -44,14 +44,23 @@ FIXED_ACTIONS = {
 ESCALATION_MIN_DAY_OFFSET = {"ESCALATE_TO_PROCUREMENT": 14, "ESCALATE_TO_FINANCE": 30}
 
 
-def _write_audit_log(invoice_id: str, observation: dict, decision: dict, execution: dict) -> None:
+def _write_audit_log(invoice_id: str, observation: dict, decision: dict, execution: dict,
+                      tool_name: str) -> None:
     # Reconciliation fix (2026-09-03): this used to be a private writer using
     # only a subset of audit_logs' schema. Now a thin wrapper over the shared
-    # libs/rzp_agent_kit/audit.py writer every other problem's tools use too,
-    # kept here only so call sites below don't all need a tool_name threaded
-    # through them individually.
+    # libs/rzp_agent_kit/audit.py writer every other problem's tools use too.
+    #
+    # Real bug found live (2026-09-05): tool_name used to be hardcoded to
+    # "execute_action" here regardless of which tool actually called this
+    # wrapper - match_bank_transfer_to_invoice and pause_for_dispute's own
+    # audit entries were both silently mislabeled as "execute_action" ever
+    # since this wrapper was introduced, discovered only by reading a real
+    # pause_for_dispute audit entry back during the reverse two-hop
+    # delegation's live verification and noticing the tool_name didn't match
+    # what was actually called. Now threaded through explicitly per call
+    # site, same as every other problem's tools already do.
     write_audit_log(
-        problem_id=9, tool_name="execute_action", entity_refs={"invoice_id": invoice_id},
+        problem_id=9, tool_name=tool_name, entity_refs={"invoice_id": invoice_id},
         observation=observation, decision=decision, execution=execution, mcp_server="prob9_recon",
     )
 
@@ -103,7 +112,7 @@ def match_bank_transfer_to_invoice(invoice_id: str, amount_received: int, utr: s
             invoice_id,
             {"amount_received": amount_received, "utr": utr, "expected_after_tds": expected_after_tds},
             {"action": "MARK_AS_RECOVERED", "reason": "amount_matched_within_tds_tolerance"},
-            {"status": "settled"},
+            {"status": "settled"}, tool_name="match_bank_transfer_to_invoice",
         )
         return {"matched": True, "action": "MARK_AS_RECOVERED"}
 
@@ -111,7 +120,7 @@ def match_bank_transfer_to_invoice(invoice_id: str, amount_received: int, utr: s
         invoice_id,
         {"amount_received": amount_received, "utr": utr, "expected_after_tds": expected_after_tds},
         {"action": "REQUEST_INVOICE_CONFIRMATION", "reason": "amount_below_expected_after_tds"},
-        {"status": "flagged_for_review"},
+        {"status": "flagged_for_review"}, tool_name="match_bank_transfer_to_invoice",
     )
     return {"matched": False, "action": "REQUEST_INVOICE_CONFIRMATION",
             "shortfall": expected_after_tds - amount_received}
@@ -141,6 +150,31 @@ def check_gstin(invoice_id: str) -> dict:
 
 
 @mcp.tool()
+def find_open_invoice_for_customer(customer_id: str) -> dict:
+    """Resolves which invoice a customer is most likely messaging about, for
+    the reverse two-hop delegation path (2026-09-05 gap fix): the
+    Conversational NLP Agent only ever has customer_id from an inbound
+    WhatsApp message, never invoice_id - that's this problem's own data,
+    behind the same hard tool-isolation boundary every other cross-problem
+    handoff in this project respects. Picks the nearest-due invoice not
+    already resolved or disputed; returns found=False rather than guessing
+    if the customer has none, so the caller can say so instead of inventing
+    an invoice_id."""
+    db = get_db()
+    invoice = db.invoices.find_one(
+        {"customer_id": customer_id, "status": {"$nin": ["recovered", "disputed", "cancelled"]}},
+        sort=[("due_date", 1)],
+    )
+    if invoice is None:
+        return {"found": False}
+    return {
+        "found": True, "invoice_id": invoice["razorpay_invoice_id"],
+        "amount": invoice.get("amount"),
+        "due_date": invoice["due_date"].isoformat() if invoice.get("due_date") else None,
+    }
+
+
+@mcp.tool()
 def pause_for_dispute(invoice_id: str, dispute_type: str, description: str) -> dict:
     """Hard stopping rule — the agent must know when NOT to chase money.
     Clears every remaining escalation checkpoint and creates a billing
@@ -154,7 +188,7 @@ def pause_for_dispute(invoice_id: str, dispute_type: str, description: str) -> d
     db.invoices.update_one({"razorpay_invoice_id": invoice_id}, {"$set": {"status": "disputed"}})
     _write_audit_log(
         invoice_id, {"dispute_type": dispute_type, "description": description},
-        {"action": "PAUSE_FOR_DISPUTE"}, {"status": "collection_paused"},
+        {"action": "PAUSE_FOR_DISPUTE"}, {"status": "collection_paused"}, tool_name="pause_for_dispute",
     )
     return {"status": "paused", "dispute_type": dispute_type}
 
@@ -260,7 +294,8 @@ def execute_action(invoice_id: str, action: str, reasoning: str) -> dict:
     elif action == "PAUSE_FOR_DISPUTE":
         return pause_for_dispute(invoice_id, "unspecified", reasoning)
 
-    _write_audit_log(invoice_id, context, {"action": action, "reasoning": reasoning}, execution)
+    _write_audit_log(invoice_id, context, {"action": action, "reasoning": reasoning}, execution,
+                      tool_name="execute_action")
     return {"status": "executed", "action": action, **execution}
 
 

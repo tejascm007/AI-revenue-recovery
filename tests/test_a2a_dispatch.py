@@ -39,6 +39,37 @@ def test_build_delegation_instruction_for_a_freeform_send_names_the_right_tool()
     assert "Hello! How can we help?" in instruction
 
 
+def test_build_delegation_instruction_for_a_b2b_dispute_names_the_right_tools_in_order():
+    artifact = {
+        "action": "flag_b2b_dispute", "customer_id": "cust_1", "phone": "+919999999999",
+        "raw_message": "We already paid this invoice last week.",
+        "dispute_reason": "customer claims prior payment",
+    }
+    instruction = build_delegation_instruction(artifact)
+    assert "find_open_invoice_for_customer" in instruction
+    assert "pause_for_dispute" in instruction
+    assert "send_whatsapp_message" not in instruction
+    assert "send_freeform_reply" not in instruction
+    assert "cust_1" in instruction
+    assert "We already paid this invoice last week." in instruction
+    # the resolve-invoice step must be told to happen before the pause step
+    assert instruction.index("find_open_invoice_for_customer") < instruction.index("pause_for_dispute")
+
+
+def test_build_delegation_instruction_for_a_payment_link_resend_names_the_right_tools_in_order():
+    artifact = {
+        "action": "request_payment_link_resend", "customer_id": "cust_2", "phone": "+919999999999",
+        "raw_message": "Can you send that payment link again, I lost it.",
+    }
+    instruction = build_delegation_instruction(artifact)
+    assert "find_active_checkout_session_for_customer" in instruction
+    assert "generate_recovery_link" in instruction
+    assert "send_whatsapp_message" not in instruction
+    assert "cust_2" in instruction
+    assert "Can you send that payment link again, I lost it." in instruction
+    assert instruction.index("find_active_checkout_session_for_customer") < instruction.index("generate_recovery_link")
+
+
 def test_build_delegation_instruction_defaults_to_template_shape_for_unknown_action():
     # An artifact with no "action" key (or a future third kind) falls back
     # to the template-based instruction rather than raising - the safer

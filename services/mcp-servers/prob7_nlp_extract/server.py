@@ -157,6 +157,58 @@ def clear_ptp_lock(subscription_id: str, outcome: str) -> dict:
 
 
 @mcp.tool()
+def flag_payment_link_resend_request(customer_id: str, phone: str | None, raw_message: str) -> dict:
+    """Called when an inbound WhatsApp message asks to resend/regenerate a
+    payment link ("can you send that link again", "I lost the payment
+    link") rather than a PTP, FAQ, or dispute intent. This agent doesn't own
+    checkout state - Problem 3's tools are isolated from it, the same hard
+    boundary every other cross-problem handoff in this project respects -
+    so it hands off customer_id via two-hop delegation, and the Checkout
+    Salvage Agent resolves the actual order itself
+    (find_active_checkout_session_for_customer) before calling
+    generate_recovery_link. Never invents an order_id here."""
+    write_audit_log(
+        problem_id=7, tool_name="flag_payment_link_resend_request", entity_refs={"customer_id": customer_id},
+        observation={"raw_message": raw_message},
+        decision={"action": "DELEGATE_RESEND_TO_CHECKOUT_SALVAGE"}, execution={"status": "delegated"},
+        mcp_server="prob7_nlp_extract",
+    )
+    return {
+        "status": "pending_two_hop_delegation",
+        "artifact": {
+            "action": "request_payment_link_resend", "customer_id": customer_id, "phone": phone,
+            "raw_message": raw_message,
+        },
+    }
+
+
+@mcp.tool()
+def flag_b2b_dispute(customer_id: str, phone: str | None, raw_message: str, dispute_reason: str) -> dict:
+    """Called when an inbound WhatsApp message reveals a B2B billing dispute
+    (e.g. "we already paid this", "the amount charged is wrong") rather than
+    a PTP or FAQ intent. This agent doesn't own invoice data - Problem 9's
+    tools are isolated from it, the same hard boundary every other
+    cross-problem handoff in this project respects - so it hands off
+    customer_id and the raw dispute context via two-hop delegation, and the
+    B2B Receivables Agent resolves the actual invoice itself
+    (find_open_invoice_for_customer) before calling pause_for_dispute. Never
+    invents an invoice_id here."""
+    write_audit_log(
+        problem_id=7, tool_name="flag_b2b_dispute", entity_refs={"customer_id": customer_id},
+        observation={"raw_message": raw_message, "dispute_reason": dispute_reason},
+        decision={"action": "DELEGATE_DISPUTE_TO_B2B"}, execution={"status": "delegated"},
+        mcp_server="prob7_nlp_extract",
+    )
+    return {
+        "status": "pending_two_hop_delegation",
+        "artifact": {
+            "action": "flag_b2b_dispute", "customer_id": customer_id, "phone": phone,
+            "raw_message": raw_message, "dispute_reason": dispute_reason,
+        },
+    }
+
+
+@mcp.tool()
 def escalate_for_review(subscription_id: str, reason: str) -> dict:
     """HOSTILE sentiment always escalates to human review regardless of
     whether a PTP lock was also successfully set — never let a visibly upset

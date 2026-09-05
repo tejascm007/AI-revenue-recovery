@@ -28,6 +28,29 @@ AGENT_NAMES = {
 # same mapping above rather than a second hardcoded URL.
 CONVERSATIONAL_NLP_AGENT_URL = PROBLEM_TO_AGENT_URL[7]
 
+# Gap fix (2026-09-05, reverse two-hop): the delegation direction above is
+# always "some agent -> Conversational NLP Agent, please send this." The
+# reverse also exists now - the Conversational NLP Agent detects a B2B
+# dispute intent in an inbound message it owns (Problem 7/8) but doesn't own
+# invoice data to act on it, so it delegates to the B2B Receivables Agent
+# instead. One shared dict, keyed by the artifact's own "action", so the
+# Orchestrator resolves the target generically rather than hardcoding a
+# second always-Conversational-NLP assumption for every future case.
+DELEGATION_TARGET_URLS = {
+    "send_whatsapp": CONVERSATIONAL_NLP_AGENT_URL,
+    "send_whatsapp_freeform": CONVERSATIONAL_NLP_AGENT_URL,
+    "flag_b2b_dispute": PROBLEM_TO_AGENT_URL[9],
+    # Gap fix (2026-09-05): a second reverse-delegation case, generalizing
+    # the pattern beyond just B2B disputes - a customer asking to resend
+    # their payment link routes to the Checkout Salvage Agent (Problem 3's
+    # owner), which itself then delegates the actual WhatsApp send back to
+    # the Conversational NLP Agent (a third hop - see main.py's
+    # dispatch_with_delegation). Adding a future cross-problem request type
+    # here is just one more dict entry plus one small deterministic tool
+    # pair, not a new mechanism each time.
+    "request_payment_link_resend": PROBLEM_TO_AGENT_URL[3],
+}
+
 
 def resolve_agent_url(problem_id: int) -> str:
     if problem_id not in PROBLEM_TO_AGENT_URL:

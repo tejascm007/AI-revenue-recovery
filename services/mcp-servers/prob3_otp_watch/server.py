@@ -23,6 +23,7 @@ from fastmcp import FastMCP  # noqa: E402
 
 from rzp_agent_kit.audit import write_audit_log  # noqa: E402
 from rzp_agent_kit.wa_templates import build_delegation_artifact  # noqa: E402
+from rzp_common.mongo_client import get_db  # noqa: E402
 from rzp_razorpay_client.client import create_payment_link, fetch_order_payments  # noqa: E402
 from inventory import check_stock  # noqa: E402
 from watchdog import claim_ghost_debit, schedule_stage2  # noqa: E402
@@ -97,6 +98,28 @@ def schedule_second_checkpoint(order_id: str) -> dict:
         execution={"status": "stage2_scheduled"}, mcp_server="prob3_otp_watch",
     )
     return {"status": "stage2_scheduled", "order_id": order_id}
+
+
+@mcp.tool()
+def find_active_checkout_session_for_customer(customer_id: str) -> dict:
+    """Resolves which checkout session a customer's "resend my payment link"
+    request is about, for the reverse two-hop delegation path (2026-09-05
+    gap fix): the Conversational NLP Agent only ever has customer_id from an
+    inbound WhatsApp message, never order_id - that's this problem's own
+    ephemeral watchdog state. Picks the most recent session not already
+    resolved (stage "recovered"/"recovered_link_sent"); returns found=False
+    rather than guessing an order_id if the customer has none active."""
+    db = get_db()
+    session = db.checkout_sessions.find_one(
+        {"customer_id": customer_id, "stage": {"$nin": ["recovered", "recovered_link_sent"]}},
+        sort=[("created_at", -1)],
+    )
+    if session is None:
+        return {"found": False}
+    return {
+        "found": True, "order_id": session["_id"], "amount": session.get("amount"),
+        "customer_name": session.get("customer_name"), "customer_contact": session.get("customer_contact"),
+    }
 
 
 @mcp.tool()
