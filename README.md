@@ -95,6 +95,11 @@ java -cp "<kafka-dir>/libs/*" org.apache.kafka.tools.TopicCommand --create `
 uv run python scripts/rag_db_setup.py
 uv run python scripts/ingest_faq_documents.py   # needs OPENROUTER_API_KEY in .env first
 
+# Optional, demo/testing only - Problem 9 has no real ERP sync to source
+# invoices from; this seeds a few so the B2B Receivables Agent has something
+# to actually act on
+uv run python scripts/seed_b2b_invoices.py
+
 # Credentials
 cp .env.example .env
 # fill in .env - see .env.example's own comments for where to get each value
@@ -142,7 +147,7 @@ services/
   watchdog_poller/       # drains the shared Redis checkpoint queue, republishes due events onto Kafka
   agents/                # 4 A2A sub-agents, each an AgentExecutor + MultiServerMCPClient
   mcp-servers/           # 9 FastMCP servers - prob2 through prob9 (one per problem) + prob0 (cross-cutting RAG)
-scripts/                 # db_setup, rag_db_setup, ingest_faq_documents, start/stop scripts
+scripts/                 # db_setup, rag_db_setup, ingest_faq_documents, seed_b2b_invoices, start/stop scripts
 tests/                   # pytest - the deterministic logic only, see tests/README.md for scope
 .github/workflows/       # CI: runs tests/ on every push/PR
 ```
@@ -161,4 +166,4 @@ Runs in GitHub Actions on every push (`.github/workflows/tests.yml`). Deliberate
 - A merchant-facing dashboard (recovery-rate tiles, audit-trail drill-down) — explicitly out of scope for every LLD in this project so far, not just unbuilt
 - Live-infra integration tests in CI (ephemeral Mongo/Redis/Kafka via `docker-compose`, say) — the automated suite that exists covers pure logic only, see `tests/README.md`
 - Razorpay Smart Collect (Virtual Accounts) needs enabling on your Razorpay account separately — confirmed via a real API call that it's an account-level gap, not a code issue; Problem 9's reconciliation flow needs it
-- Nothing in this codebase ever creates an `invoices` document (Problem 9's B2B receivables tools all assume one already exists, populated from some out-of-band ERP/accounting sync this project doesn't own) — verified by finding the collection genuinely empty while live-testing the reverse two-hop delegation below; a seed script or real ERP integration is separately-scoped future work
+- A real ERP/accounting sync that actually creates `invoices` documents from a merchant's own systems — out of scope for this project. `scripts/seed_b2b_invoices.py` fills that gap for demo/testing purposes only (3 customers, 4 invoices spanning a natural escalation case, a chronically-late payer, a GSTIN-mismatch dispute case, and one not-yet-due invoice), scheduling each invoice's real escalation checkpoints so the Watchdog Poller drives them through the actual Kafka → Orchestrator → B2B Receivables Agent path on its own
