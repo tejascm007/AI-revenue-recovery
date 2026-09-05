@@ -30,7 +30,7 @@ The full design rationale, decision history, and per-problem low-level designs l
  │ - Prob 3    │         │ - Prob 6    │            │            │ - Prob 8    │         │ - Tools:    │
  │ - Prob 4    │         │ - Tools:    │            │            │ - Tools:    │         │ Recon, Esc, │
  │ - Tools:    │         │ Sub_Pause,  │            │            │ NLP_Extract,│         │ ERP_Mock    │
- │ Links, Nudge│         │ Invoice_Gen │            │            │ Meta_WA_API │         │             │
+ │ Links, Nudge│         │ Invoice_Gen │            │            │ Meta_WA_API │         │ Dispute     │
  └─────────────┘         └─────────────┘            │            └──────┬──────┘         └──────┬──────┘
                                                     │                   │                       │
           *Problem 1 (Layer 0 Vault)* ◄─────────────┘                   └───────────┬───────────┘
@@ -54,9 +54,44 @@ scheduled follow-ups (stage-2 checkout checks, dunning touches, PTP
 due-dates, B2B escalations) back through the same Kafka → Orchestrator path.
 ```
 
+The diagram above is the *first hop* only (Orchestrator → owning agent → its
+tools). Every cross-agent side effect is a **second hop**, always re-routed
+through the Orchestrator (never agent-to-agent directly), resolved generically
+from the delegation artifact's own `action` field
+(`services/orchestrator/agent_registry.py`'s `DELEGATION_TARGET_URLS`) rather
+than a fixed shape:
+
+```
+ forward (send a WhatsApp message - only the Conversational NLP Agent may):
+
+   Checkout Salvage   ─┐
+   Recurring Revenue   ├─ send_whatsapp / send_whatsapp_freeform ─► Conversational NLP
+   B2B Receivables     ─┘
+
+ reverse (Conversational NLP Agent doesn't own the data needed to act, so it
+ hands off to whichever agent does):
+
+   Conversational NLP  ─ flag_b2b_dispute ───────────────► B2B Receivables
+                            (resolves the invoice itself via
+                             find_open_invoice_for_customer,
+                             then pause_for_dispute)
+
+   Conversational NLP  ─ request_payment_link_resend ────► Checkout Salvage
+                            (resolves the order itself via
+                             find_active_checkout_session_for_customer,
+                             then generate_recovery_link - which itself
+                             re-delegates back to Conversational NLP to
+                             actually send it: a real 3-hop chain)
+```
+
+A chain like the last one is why `main.py`'s `dispatch_with_delegation` is
+recursive (bounded at `MAX_DELEGATION_HOPS = 4`), not a fixed two-step —
+an earlier version only ever checked one level of delegation and would have
+silently dropped that third hop, creating the link but never sending it.
+
 Problem 1 (RBI-compliant tokenized card vault) sits outside the agent mesh entirely — it's not agentic, just plain FastAPI + MongoDB + Razorpay TokenHQ, since compliant token storage is a memory problem, not a judgment problem.
 
-**Why A2A + MCP, not one flat agent**: A2A (agent-to-agent) solves peer delegation between the 4 domain agents; MCP (model-context-protocol) solves each agent's own access to its specific tools, with hard tool isolation per problem (no agent can call another problem's tools directly). A cross-agent side effect never happens via shared tool access — it's a two-hop delegation through the Orchestrator, the same pattern A2A's own "routing agent" design intends. This runs in both directions: forward (e.g. the Checkout Salvage Agent needing a WhatsApp message sent, a capability only the Conversational NLP Agent owns) and reverse (the Conversational NLP Agent recognizing a B2B billing dispute in an inbound WhatsApp message, but not owning invoice data to act on it, so it delegates to the B2B Receivables Agent instead). The Orchestrator resolves each delegation artifact's target agent generically from its own `action` field (`services/orchestrator/agent_registry.py`'s `DELEGATION_TARGET_URLS`), not by assuming every artifact is WhatsApp-bound.
+**Why A2A + MCP, not one flat agent**: A2A (agent-to-agent) solves peer delegation between the 4 domain agents; MCP (model-context-protocol) solves each agent's own access to its specific tools, with hard tool isolation per problem (no agent can call another problem's tools directly). A cross-agent side effect never happens via shared tool access — it's always the two-hop delegation shown above, through the Orchestrator, the same pattern A2A's own "routing agent" design intends, never agent-to-agent directly.
 
 ## Tech stack
 
