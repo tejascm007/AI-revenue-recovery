@@ -3,10 +3,16 @@ from the main revenue_recovery database - see libs/rzp_common/rag_mongo_client.p
 for why) with real Atlas Vector Search + Atlas Search (BM25) indexes, both
 verified to work against the local `mongodb-atlas-local` Docker deployment.
 
-Embedding dimensions (1536) match text-embedding-3-small, the OpenAI
-embedding model ingest_faq_documents.py uses - if that model choice ever
-changes, this index's numDimensions must be rebuilt to match, since a vector
-index is dimension-locked.
+Embedding dimensions (2048) match nvidia/nemotron-3-embed-1b:free, the
+OpenRouter embedding model ingest_faq_documents.py uses (switched 2026-09-03
+from openai/text-embedding-3-small's 1536 dims to a free model, verified
+live before switching) - if EMBEDDING_MODEL ever changes again, this
+index's numDimensions must be rebuilt to match, since a vector index is
+dimension-locked at creation. This script only creates an index if one by
+this name doesn't already exist - a dimension change requires dropping the
+old one first (faq_documents.drop_search_index(VECTOR_INDEX_NAME)), which
+this script does NOT do automatically, to avoid silently destroying a real
+corpus's index over a routine re-run.
 
 Idempotent - safe to re-run. Requires the RAG deployment container running:
     docker run -d --name revenue-recovery-atlas-local -p 27018:27017 mongodb/mongodb-atlas-local:latest
@@ -26,7 +32,7 @@ sys.path.insert(0, str(_CODES_ROOT / "libs"))
 
 from rzp_common.rag_mongo_client import get_rag_db  # noqa: E402
 
-EMBEDDING_DIMENSIONS = 1536
+EMBEDDING_DIMENSIONS = 2048
 VECTOR_INDEX_NAME = "faq_vector_index"
 TEXT_INDEX_NAME = "faq_text_index"
 

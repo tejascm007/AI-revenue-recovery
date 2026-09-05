@@ -71,26 +71,55 @@ def _get_retriever() -> MongoDBAtlasHybridSearchRetriever:
     return _retriever
 
 
+def _raw_vector_confidence(query_text: str) -> float:
+    """Gap fix (2026-09-03, found by running real retrieval against a real
+    corpus for the first time): MongoDBAtlasHybridSearchRetriever's own
+    "score" field is an RRF-fused rank score (1/(60+rank), summed across
+    vector+text), not a similarity score - it has no absolute meaning and
+    cannot be compared against a fixed threshold like the design's original
+    0.65. Verified directly: a clearly irrelevant query ("What is the
+    capital of France?") scored within 0.0005 of a genuinely relevant one,
+    because RRF is rank-based - with only a handful of documents, *something*
+    always lands at rank 0 regardless of true relevance. A raw cosine
+    similarity from $vectorSearch, bypassing RRF entirely, DOES discriminate
+    correctly - verified on the same two queries (0.86 relevant vs. 0.51
+    irrelevant) - and sits in the 0-1 range the original 0.65 default
+    actually assumed. Used here only for the confidence gate; the hybrid
+    retriever above still supplies the actual returned chunks, since BM25
+    genuinely helps catch exact keyword matches vector search alone can miss."""
+    query_vector = get_embeddings().embed_query(query_text)
+    pipeline = [
+        {"$vectorSearch": {"index": VECTOR_INDEX_NAME, "path": "embedding", "queryVector": query_vector,
+                            "numCandidates": 50, "limit": 1}},
+        {"$project": {"score": {"$meta": "vectorSearchScore"}}},
+    ]
+    results = list(get_rag_db()["faq_documents"].aggregate(pipeline))
+    return results[0]["score"] if results else 0.0
+
+
 @mcp.tool()
 def retrieve_policy_context(problem_id: int, query_text: str) -> dict:
     """Hybrid (vector + BM25, RRF-fused) retrieval against the FAQ/T&Cs/SOP
-    corpus, gated by merchant_config.faq_min_confidence - the actual
-    mechanism behind the design's "soft-fail" principle. Below-threshold
-    results come back as status:"no_match", never a weak match answered
-    from anyway; the caller must escalate to a human in that case, not
-    invent a policy detail. problem_id is 8 (Conversational NLP FAQ) or 9
-    (B2B dispute replies) in practice, kept generic for future callers."""
+    corpus for the actual chunks returned, gated by a raw cosine-similarity
+    confidence check against merchant_config.faq_min_confidence (see
+    _raw_vector_confidence for why RRF's own score can't be used for this) -
+    the actual mechanism behind the design's "soft-fail" principle.
+    Below-threshold results come back as status:"no_match", never a weak
+    match answered from anyway; the caller must escalate to a human in that
+    case, not invent a policy detail. problem_id is 8 (Conversational NLP
+    FAQ) or 9 (B2B dispute replies) in practice, kept generic for future
+    callers."""
     db = get_db()
     config = db.merchant_config.find_one({"_id": "merchant_config"}) or {}
     threshold = config.get("faq_min_confidence", DEFAULT_CONFIDENCE_THRESHOLD)
 
-    docs = _get_retriever().invoke(query_text)
-    if not docs or docs[0].metadata.get("score", 0.0) < threshold:
-        top_score = docs[0].metadata.get("score", 0.0) if docs else 0.0
-        return {"status": "no_match", "top_score": top_score, "confidence_threshold": threshold, "chunks": []}
+    confidence = _raw_vector_confidence(query_text)
+    if confidence < threshold:
+        return {"status": "no_match", "top_score": confidence, "confidence_threshold": threshold, "chunks": []}
 
+    docs = _get_retriever().invoke(query_text)
     return {
-        "status": "match", "top_score": docs[0].metadata.get("score", 0.0), "confidence_threshold": threshold,
+        "status": "match", "top_score": confidence, "confidence_threshold": threshold,
         "chunks": [
             {"text": d.page_content, "source": d.metadata.get("source"), "doc_type": d.metadata.get("doc_type"),
              "doc_id": str(d.metadata.get("_id")), "score": d.metadata.get("score")}
