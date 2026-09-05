@@ -1,7 +1,7 @@
 """Problem 3 watchdog scheduling and kill-switch — Flows A and B from the design.
 
 Plain functions, NOT MCP tools. Scheduling happens synchronously in the
-checkout API (services/backend, not yet built) the moment WE create the
+checkout API (services/backend/api/checkout.py) the moment WE create the
 order; the kill-switch runs synchronously in the shared webhook handler the
 moment a real payment.captured/order.paid arrives. Neither involves an LLM
 decision — only the reactive diagnosis once a checkpoint actually fires

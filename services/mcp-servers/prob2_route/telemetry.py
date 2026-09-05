@@ -2,7 +2,7 @@
 
 These are plain functions, NOT MCP tools. Recording telemetry on every payment
 webhook is a synchronous, non-agentic side-effect performed directly by the
-shared webhook handler (services/backend, not yet built) — the same pattern
+shared webhook handler (services/backend/api/webhooks.py) — the same pattern
 already established for Problem 1's vault write and Problem 3's kill-switch.
 No LLM/agent decision is involved in recording a data point; only diagnosing
 and acting on the resulting state (server.py's tools) goes through the agent.

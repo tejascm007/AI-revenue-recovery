@@ -29,8 +29,8 @@ The full design rationale, decision history, and per-problem low-level designs l
  │ - Prob 2    │         │ - Prob 5    │            │            │ - Prob 7    │         │ - Prob 9    │
  │ - Prob 3    │         │ - Prob 6    │            │            │ - Prob 8    │         │ - Tools:    │
  │ - Prob 4    │         │ - Tools:    │            │            │ - Tools:    │         │ Recon, Esc, │
- │ - Tools:    │         │ Sub_Pause,  │            │            │ NLP_Extract,│         │ ERP_Mock    │
- │ Links, Nudge│         │ Invoice_Gen │            │            │ Meta_WA_API │         │ Dispute     │
+ │ - Tools:    │         │ Sub_Pause,  │            │            │ NLP_Extract,│         │ Dispute     │
+ │ Links, Nudge│         │ Invoice_Gen │            │            │ Meta_WA_API │         │             │
  └─────────────┘         └─────────────┘            │            └──────┬──────┘         └──────┬──────┘
                                                     │                   │                       │
           *Problem 1 (Layer 0 Vault)* ◄─────────────┘                   └───────────┬───────────┘
@@ -38,10 +38,14 @@ The full design rationale, decision history, and per-problem low-level designs l
                                                                                      ▼
                                                                         ┌───────────────────────┐
                                                                         │  FastMCP Srv 0 (RAG)  │
-                                                                        │  - Policy RAG          │
-                                                                        │  - Tools: Retrieve_    │
-                                                                        │    Policy_Context,     │
-                                                                        │    Log_FAQ_Interaction │
+                                                                        │  - Policy RAG         │
+                                                                        │  - Tools:             │
+                                                                        │    Retrieve_Policy_   │
+                                                                        │    Context,           │
+                                                                        │    Log_FAQ_           │
+                                                                        │    Interaction,       │
+                                                                        │    Build_FAQ_Reply_   │
+                                                                        │    Delegation         │
                                                                         └───────────┬───────────┘
                                                                                      ▼
                                                                      [ MongoDB Atlas Hybrid Search ]
