@@ -28,7 +28,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-from kafka_producer import TOPIC
+from kafka_test_utils import consumer_positioned_at_end, wait_for_event
 from main import app
 
 WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
@@ -47,7 +47,6 @@ def _require_webhook_secret():
 
 
 def test_a_real_payment_failed_webhook_is_dumped_signature_verified_and_published_to_kafka():
-    from confluent_kafka import Consumer
     from rzp_common.mongo_client import get_db
 
     payment_id = f"pay_integration_test_{uuid.uuid4().hex[:12]}"
@@ -62,17 +61,12 @@ def test_a_real_payment_failed_webhook_is_dumped_signature_verified_and_publishe
     }
     raw_body, signature = _signed_request(body)
 
-    # "earliest", not "latest": a fresh consumer group's very first poll can
-    # race the assignment against a message produced immediately after
-    # subscribing, silently missing it under "latest". Reading from the true
-    # start and filtering by event_id below is slower on a topic with real
-    # retained history but can't miss the message through that race.
-    consumer = Consumer({
-        "bootstrap.servers": "localhost:9092",
-        "group.id": f"integration-test-webhook-{uuid.uuid4()}",
-        "auto.offset.reset": "earliest",
-    })
-    consumer.subscribe([TOPIC])
+    # Positioned at each partition's current end BEFORE the webhook fires -
+    # avoids both the "latest" assignment-timing race and having to scan
+    # past a long-lived local topic's real retained history (see
+    # kafka_test_utils.py's own docstring for why "earliest" + a bounded
+    # scan eventually stopped working here).
+    consumer = consumer_positioned_at_end(group_id=f"integration-test-webhook-{uuid.uuid4()}")
 
     client = TestClient(app)
     response = client.post(
@@ -88,18 +82,9 @@ def test_a_real_payment_failed_webhook_is_dumped_signature_verified_and_publishe
     assert doc["processed"] is True
     assert doc["processing_error"] is None
 
-    kafka_message = None
-    for _ in range(200):  # generous - "earliest" may need to scan real retained history first
-        msg = consumer.poll(1.0)
-        if msg is None or msg.error():
-            continue
-        event = json.loads(msg.value().decode("utf-8"))
-        if event.get("event_id") == payment_id:
-            kafka_message = event
-            break
+    kafka_message = wait_for_event(consumer, payment_id)
     consumer.close()
 
-    assert kafka_message is not None, "payment.failed was never published to Kafka"
     assert kafka_message["event_type"] == "payment.failed"
     assert kafka_message["problem_id"] == 2  # netbanking isn't an EMI method
     assert kafka_message["payload"]["order_id"] == order_id

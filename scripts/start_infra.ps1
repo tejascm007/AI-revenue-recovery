@@ -18,6 +18,16 @@ $MongoDbPath = "C:\Users\ADMIN\OneDrive\Documents\career\Razorpay\data\db"
 $KafkaHome = "C:\Users\ADMIN\OneDrive\Documents\career\kafka_2.13-4.1.0\kafka_2.13-4.1.0"
 # --------------------------------------------------------------------------
 
+# Real gap hit live (2026-09-05): Kafka crashed with no trace anywhere -
+# -WindowStyle Hidden sends its console output nowhere persistent, so
+# diagnosing the crash needed re-running it in the foreground by hand.
+# Redirecting to a real log file here means a future crash is diagnosable
+# immediately (`Get-Content $KafkaLogFile -Tail 50`) without that detour.
+$LogDir = Join-Path (Split-Path -Parent $PSScriptRoot) "logs"
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$KafkaLogFile = Join-Path $LogDir "kafka.log"
+$KafkaErrLogFile = Join-Path $LogDir "kafka-error.log"
+
 function Test-PortListening($Port) {
     $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
     return $null -ne $conn
@@ -38,11 +48,12 @@ if (Test-PortListening 9092) {
     Write-Host "already running"
 } else {
     Push-Location $KafkaHome
-    Start-Process -FilePath "java" -ArgumentList "-cp", "`"libs/*`"", "kafka.Kafka", "config/server.properties" -WindowStyle Hidden
+    Start-Process -FilePath "java" -ArgumentList "-cp", "`"libs/*`"", "kafka.Kafka", "config/server.properties" `
+        -WindowStyle Hidden -RedirectStandardOutput $KafkaLogFile -RedirectStandardError $KafkaErrLogFile
     Pop-Location
     Start-Sleep -Seconds 8
     if (Test-PortListening 9092) { Write-Host "started" -ForegroundColor Green }
-    else { Write-Warning "Kafka did not come up - check it's already formatted (scripts/README.md has the one-time setup)" }
+    else { Write-Warning "Kafka did not come up - check it's already formatted (scripts/README.md has the one-time setup), or check $KafkaErrLogFile for a real startup error" }
 }
 
 Write-Host "`n=== Docker containers (Redis + RAG MongoDB deployment) ===" -ForegroundColor Cyan
