@@ -184,21 +184,27 @@ services/
   mcp-servers/           # 9 FastMCP servers - prob2 through prob9 (one per problem) + prob0 (cross-cutting RAG)
 scripts/                 # db_setup, rag_db_setup, ingest_faq_documents, seed_b2b_invoices, start/stop scripts
 tests/                   # pytest - the deterministic logic only, see tests/README.md for scope
-.github/workflows/       # CI: runs tests/ on every push/PR
+tests_integration/       # pytest - real Mongo/Redis/Kafka, see tests_integration/README.md for scope
+.github/workflows/       # CI: tests.yml (pure logic) + integration-tests.yml (real ephemeral infra)
 ```
 
 ## Tests & CI
 
 ```powershell
-uv run pytest tests/ -v
+uv run pytest tests/ -v                  # pure logic, no infra needed
+uv run pytest tests_integration/ -v      # needs real Mongo/Redis/Kafka - see tests_integration/README.md
 ```
 
-Runs in GitHub Actions on every push (`.github/workflows/tests.yml`). Deliberately scoped to pure, infra-free logic — see `tests/README.md` for exactly what's covered and why the broader system's verification (every MCP tool, agent, and the full pipeline, including real Razorpay/Meta calls) has instead been live-run-and-read, documented in `../Design_Spec_and_Decisions.md`'s changelog, rather than mocked into this suite.
+Two separate suites, kept in separate directories on purpose:
+
+- **`tests/`** — pure, infra-free logic (`tests.yml` in CI). See `tests/README.md` for exactly what's covered.
+- **`tests_integration/`** — real MongoDB constraints (unique/TTL indexes), a real Kafka producer→consumer round trip, and the FastAPI backend's webhook handler genuinely writing to Mongo and publishing to Kafka, all against real ephemeral infra (`integration-tests.yml` in CI, via GitHub Actions service containers - no `docker-compose` needed). Deliberately still stops short of anything needing a real Razorpay/Meta/OpenRouter credential — see `tests_integration/README.md` for the exact boundary and why.
+
+Both run in GitHub Actions on every push/PR. The broader system's fuller verification (every MCP tool, every agent, the full LLM-driven pipeline, real Razorpay/Meta calls) has instead been live-run-and-read by hand, documented in `../Design_Spec_and_Decisions.md`'s changelog, rather than mocked or spent repeatedly against paid APIs in CI.
 
 ## What's not built yet
 
 - The merchant's own storefront/checkout page (a prompt for generating one with Lovable exists in this project's conversation history, not yet built)
 - A merchant-facing dashboard (recovery-rate tiles, audit-trail drill-down) — explicitly out of scope for every LLD in this project so far, not just unbuilt
-- Live-infra integration tests in CI (ephemeral Mongo/Redis/Kafka via `docker-compose`, say) — the automated suite that exists covers pure logic only, see `tests/README.md`
 - Razorpay Smart Collect (Virtual Accounts) needs enabling on your Razorpay account separately — confirmed via a real API call that it's an account-level gap, not a code issue; Problem 9's reconciliation flow needs it
 - A real ERP/accounting sync that actually creates `invoices` documents from a merchant's own systems — out of scope for this project. `scripts/seed_b2b_invoices.py` fills that gap for demo/testing purposes only (3 customers, 4 invoices spanning a natural escalation case, a chronically-late payer, a GSTIN-mismatch dispute case, and one not-yet-due invoice), scheduling each invoice's real escalation checkpoints so the Watchdog Poller drives them through the actual Kafka → Orchestrator → B2B Receivables Agent path on its own

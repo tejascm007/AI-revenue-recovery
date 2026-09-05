@@ -1,0 +1,70 @@
+name: integration-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      RAZORPAY_WEBHOOK_SECRET: ci_test_webhook_secret
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+      # Official image, single-node KRaft combined mode - deliberately left
+      # with NO custom environment variables: apache/kafka's own docs state
+      # that overriding *any* config discards *all* its built-in defaults,
+      # and the documented quick-start (`docker run -d -p 9092:9092
+      # apache/kafka:latest`) is exactly this topology - a single broker,
+      # host-published port, client on the host. Verified for real by
+      # checking this workflow's own Actions run after pushing, not assumed
+      # from the YAML alone (see Design_Spec_and_Decisions.md's changelog).
+      kafka:
+        image: apache/kafka:latest
+        ports:
+          - 9092:9092
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Wait for Kafka to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/localhost/9092) 2>/dev/null; then echo "Kafka is up"; exit 0; fi
+            sleep 2
+          done
+          echo "Kafka never came up on :9092" && exit 1
+
+      - name: Set up MongoDB schema (real scripts/db_setup.py, not a test-only copy)
+        run: uv run python scripts/db_setup.py
+
+      - name: Create the Kafka topic
+        run: |
+          uv run python -c "
+          from confluent_kafka.admin import AdminClient, NewTopic
+          admin = AdminClient({'bootstrap.servers': 'localhost:9092'})
+          topic = NewTopic('revenue-recovery-events', num_partitions=3, replication_factor=1)
+          for name, future in admin.create_topics([topic]).items():
+              future.result()
+              print(f'created topic {name!r}')
+          "
+
+      - name: Run integration tests
+        run: uv run pytest tests_integration/ -v
