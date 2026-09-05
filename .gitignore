@@ -29,3 +29,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Runtime state (PID files from scripts/start_services.ps1)
+.run/
