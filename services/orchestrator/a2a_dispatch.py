@@ -1,11 +1,17 @@
 """A2A dispatch — sends one event to its owning sub-agent and returns the
 result, including any two-hop delegation artifacts.
 
-Timeout is generous (60s) because verified testing showed a real round trip
-involves the target agent spawning up to 3 MCP subprocess servers via `uv run
-fastmcp run ...` before it can even attempt the LLM call — the default httpx
-timeout (a few seconds) was observed to fail on this alone, well before ever
-reaching the (separately expected) missing-API-key error.
+Timeout raised to 120s (2026-09-05, from an original 60s) because live
+pre-demo testing with a free OpenRouter model (temporarily substituted while
+the paid account's balance was exhausted - see .env) showed 60s genuinely
+wasn't enough for the Conversational NLP Agent specifically: it owns 3 MCP
+subprocess servers to spawn AND free-tier models measurably respond slower
+than the paid gpt-4o this was originally tuned against. The original 60s
+reasoning still holds otherwise - a real round trip involves the target
+agent spawning up to 3 MCP subprocess servers via `uv run fastmcp run ...`
+before it can even attempt the LLM call, and the default httpx timeout (a
+few seconds) was observed to fail on this alone, well before ever reaching
+the (separately expected) missing-API-key error.
 
 Two-hop delegation fix (2026-09-03): closes the gap this module's own
 docstring used to document. Verified directly against the installed SDK
@@ -34,7 +40,7 @@ import a2a.types as t
 from a2a.client import ClientConfig, create_client
 from a2a.helpers.proto_helpers import get_data_parts, get_message_text, new_text_message
 
-DISPATCH_TIMEOUT_SECONDS = 60.0
+DISPATCH_TIMEOUT_SECONDS = 120.0
 
 
 def build_instruction(event_type: str, problem_id: int, payload: dict) -> str:

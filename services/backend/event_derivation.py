@@ -79,12 +79,23 @@ def handle_payment_failed(event: dict, razorpay_event_id: str) -> None:
 
     method = payment.get("method", "")
     problem_id = 4 if method in EMI_METHODS else 2
+    extra: dict = {"instrument_key": instrument_key}
+    if problem_id == 4:
+        # Gap fix (2026-09-05, found live testing Problem 4): suggest_alternate_emi
+        # needs to know which provider actually declined, or it can't avoid
+        # re-suggesting the same one - same missing-field pattern as
+        # instrument_key above. For card EMI ("emi"), card.issuer is the
+        # documented issuing bank (verified against Razorpay's own webhook
+        # payload docs). For "cardless_emi" (NBFC-financed), no field for
+        # this is documented anywhere found - left None rather than guessed,
+        # honestly logged as unresolved in Design_Spec_and_Decisions.md.
+        extra["declined_provider"] = (payment.get("card") or {}).get("issuer") if method == "emi" else None
     publish_event("payment.failed", problem_id, {
         "order_id": payment.get("order_id"), "payment_id": payment.get("id"),
         "method": method, "amount": payment.get("amount"),
         "error_code": payment.get("error_code"), "error_reason": payment.get("error_reason"),
         "error_source": payment.get("error_source"), "customer_id": payment.get("customer_id"),
-        "instrument_key": instrument_key,
+        **extra,
     }, event_id=razorpay_event_id)
 
 
