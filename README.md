@@ -120,12 +120,22 @@ services/
   agents/                # 4 A2A sub-agents, each an AgentExecutor + MultiServerMCPClient
   mcp-servers/           # 9 FastMCP servers - prob2 through prob9 (one per problem) + prob0 (cross-cutting RAG)
 scripts/                 # db_setup, rag_db_setup, ingest_faq_documents, start/stop scripts
+tests/                   # pytest - the deterministic logic only, see tests/README.md for scope
+.github/workflows/       # CI: runs tests/ on every push/PR
 ```
+
+## Tests & CI
+
+```powershell
+uv run pytest tests/ -v
+```
+
+Runs in GitHub Actions on every push (`.github/workflows/tests.yml`). Deliberately scoped to pure, infra-free logic — see `tests/README.md` for exactly what's covered and why the broader system's verification (every MCP tool, agent, and the full pipeline, including real Razorpay/Meta calls) has instead been live-run-and-read, documented in `../Design_Spec_and_Decisions.md`'s changelog, rather than mocked into this suite.
 
 ## What's not built yet
 
 - The merchant's own storefront/checkout page (a prompt for generating one with Lovable exists in this project's conversation history, not yet built)
 - A merchant-facing dashboard (recovery-rate tiles, audit-trail drill-down) — explicitly out of scope for every LLD in this project so far, not just unbuilt
-- A persisted automated test suite (verification so far has been live, against real infra, run and read rather than asserted in CI)
+- Live-infra integration tests in CI (ephemeral Mongo/Redis/Kafka via `docker-compose`, say) — the automated suite that exists covers pure logic only, see `tests/README.md`
 - Reverse two-hop delegation: an inbound WhatsApp message revealing a dispute intent, routed back to the B2B Receivables Agent — no detecting tool exists yet
 - Razorpay Smart Collect (Virtual Accounts) needs enabling on your Razorpay account separately — confirmed via a real API call that it's an account-level gap, not a code issue; Problem 9's reconciliation flow needs it
