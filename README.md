@@ -160,13 +160,13 @@ Every problem below has its full low-level design (data models, flow diagrams, s
 
 ## Frontend (`circuitlane-pay-flow`)
 
-A separate repository — a laptop e-commerce storefront (browse → cart → checkout → real Razorpay payment → confirmation) that exercises Problems 1–4's checkout-time path. Built with Lovable, connects to this backend's real API:
+A separate repository — a laptop e-commerce storefront (browse → cart → checkout → real Razorpay payment → confirmation) that exercises Problems 1–4's checkout-time path. Connects to this backend's real API:
 
 - `POST /api/checkout/orders` → Razorpay Standard Checkout.js, using the real `order_id`/`amount`/`currency` this backend returns
 - CORS is enabled on this backend (`services/backend/main.py`) specifically so a browser-hosted storefront on a different origin can call it
 - Env vars on the frontend side: `VITE_BACKEND_URL` (defaults to `http://localhost:8000`), `VITE_RAZORPAY_KEY_ID` (the *publishable* key_id — safe client-side, never the key_secret)
 - Deliberately guest-checkout only right now (`customer_id: null` on every order) — Problem 1's `identify` endpoint exists and works, but nothing in the storefront calls it yet, so no vault token ever gets associated with a repeat customer today. Wiring that up just needs the phone number the checkout page already collects passed to `/api/customers/identify` before payment.
-- A known, accepted rough edge: several of the AI-generated product images had real brand-logo mismatches or generation artifacts, partially fixed by reassigning to the cleanest available images — not pursued further per product decision.
+- A known, accepted rough edge: several of the product images had brand-logo mismatches or quality issues, partially fixed by reassigning to the cleanest available images — not pursued further per product decision.
 
 ## Prerequisites
 
